@@ -20,6 +20,7 @@ extern struct iodev iodev_uart;
 extern struct iodev iodev_dockchannel_uart;
 extern struct iodev iodev_fb;
 extern struct iodev iodev_log;
+extern struct iodev iodev_disklog;
 extern struct iodev iodev_usb_vuart;
 
 /* clang-format off */
@@ -29,6 +30,7 @@ struct iodev *iodevs[IODEV_NUM] = {
     [IODEV_FB] = &iodev_fb,
     [IODEV_USB_VUART] = &iodev_usb_vuart,
     [IODEV_LOG] = &iodev_log,
+    [IODEV_DISKLOG] = &iodev_disklog,
 };
 /* clang-format on */
 

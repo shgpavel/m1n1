@@ -81,6 +81,10 @@ else
 CARGO_FLAGS :=
 endif
 
+ifeq ($(DISKLOG),1)
+CFG += DISKLOG
+endif
+
 ifneq ($(WDT_TIMEOUT),)
 CFG += WDT_TIMEOUT=$(WDT_TIMEOUT)
 endif
@@ -151,6 +155,7 @@ OBJECTS := \
 	dart.o \
 	dcp.o \
 	dcp_iboot.o \
+	disklog.o \
 	devicetree.o \
 	display.o \
 	dockchannel_uart.o \

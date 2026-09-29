@@ -5,6 +5,7 @@
 
 #include "utils.h"
 #include "cpu_regs.h"
+#include "disklog.h"
 #include "iodev.h"
 #include "smp.h"
 #include "types.h"
@@ -129,6 +130,7 @@ bool timeout_expired(u64 timeout)
 void flush_and_reboot(void)
 {
     iodev_console_flush();
+    disklog_flush();
     reboot();
 }
 

@@ -8,6 +8,7 @@
 #include "adt.h"
 #include "aic.h"
 #include "cpufreq.h"
+#include "disklog.h"
 #include "display.h"
 #include "exception.h"
 #include "fb.h"
@@ -188,6 +189,7 @@ void m1n1_main(void)
 #endif
 
     printf("Initialization complete.\n");
+    disklog_flush();
 
     run_actions();
 
@@ -196,6 +198,7 @@ void m1n1_main(void)
     }
 
     printf("Preparing to run next stage at %p...\n", next_stage.entry);
+    disklog_flush();
 
     nvme_shutdown();
     exception_shutdown();
