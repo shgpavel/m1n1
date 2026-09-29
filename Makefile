@@ -131,7 +131,10 @@ DCP_OBJECTS := $(patsubst %,dcp/%, \
 
 NET_OBJECTS := $(patsubst %,net/%, \
 	bcm57762.o \
-	eth.o)
+	eth.o \
+	net.o \
+	netproxy.o \
+	netstream.o)
 
 HV_OBJECTS := $(patsubst %,hv/%, \
 	hv.o \

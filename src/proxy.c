@@ -16,6 +16,7 @@
 #include "malloc.h"
 #include "mcc.h"
 #include "memory.h"
+#include "netproxy.h"
 #include "nvme.h"
 #include "pcie.h"
 #include "pmgr.h"
@@ -464,7 +465,10 @@ int proxy_process(ProxyRequest *request, ProxyReply *reply)
             break;
 
         case P_USB_IODEV_VUART_SETUP:
-            usb_iodev_vuart_setup(request->args[0]);
+            if (request->args[0] == IODEV_NET)
+                netproxy_vuart_setup();
+            else
+                usb_iodev_vuart_setup(request->args[0]);
             break;
 
         case P_TUNABLES_APPLY_GLOBAL:

@@ -12,6 +12,7 @@
 #include "heapblock.h"
 #include "kboot.h"
 #include "mitigations.h"
+#include "netproxy.h"
 #include "smp.h"
 #include "utils.h"
 
@@ -43,6 +44,7 @@ static char expect_compatible[256];
 static struct kernel_header *kernel = NULL;
 static void *fdt = NULL;
 static char *chainload_spec = NULL;
+static char *net_spec = NULL;
 
 static void *load_one_payload(void *start, size_t size);
 
@@ -199,6 +201,8 @@ static bool check_var(u8 **p)
             chosen[chosen_cnt++] = (char *)*p;
     } else if (IS_VAR("chainload=")) {
         chainload_spec = val;
+    } else if (IS_VAR("net=")) {
+        net_spec = val;
     } else if (IS_VAR("display=")) {
         display_configure(val);
     } else if (IS_VAR("mitigations=")) {
@@ -308,6 +312,9 @@ int payload_run(void)
 
     while (p)
         p = load_one_payload(p, 0);
+
+    if (net_spec && netproxy_start(net_spec) < 0)
+        printf("Network proxy failed to start\n");
 
     if (chainload_spec) {
         return chainload_load(chainload_spec, chosen, chosen_cnt);

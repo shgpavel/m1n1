@@ -16,6 +16,7 @@
 #include "gxf.h"
 #include "heapblock.h"
 #include "mcc.h"
+#include "netproxy.h"
 #include "memory.h"
 #include "nvme.h"
 #include "payload.h"
@@ -200,6 +201,7 @@ void m1n1_main(void)
     printf("Preparing to run next stage at %p...\n", next_stage.entry);
     disklog_flush();
 
+    netproxy_shutdown();
     nvme_shutdown();
     exception_shutdown();
 #ifndef BRINGUP

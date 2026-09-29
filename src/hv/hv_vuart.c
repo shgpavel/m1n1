@@ -3,6 +3,7 @@
 #include "hv.h"
 #include "aic.h"
 #include "iodev.h"
+#include "netproxy.h"
 #include "uart.h"
 #include "uart_regs.h"
 #include "usb.h"
@@ -144,7 +145,10 @@ void hv_vuart_poll(void)
 void hv_map_vuart(u64 base, int irq, iodev_id_t iodev)
 {
     hv_map_hook(base, handle_vuart, 0x1000);
-    usb_iodev_vuart_setup(iodev);
+    if (iodev == IODEV_NET)
+        netproxy_vuart_setup();
+    else
+        usb_iodev_vuart_setup(iodev);
     vuart_irq = irq;
     active = true;
 }

@@ -1486,10 +1486,9 @@ class HV(Reloadable):
             self.log(f"PMGR R {base:x}+{off:x}:{width} = 0x{data:x} -> 0x{ret:x}")
             return ret
 
-        atc = f"ATC{self.iodev - IODEV.USB0}_USB"
-        atc_aon = f"ATC{self.iodev - IODEV.USB0}_USB_AON"
-
-        hook_devs = ["UART0", atc, atc_aon]
+        hook_devs = ["UART0"]
+        if IODEV.USB0 <= self.iodev <= IODEV.USB7:
+            hook_devs += [f"ATC{self.iodev - IODEV.USB0}_USB", f"ATC{self.iodev - IODEV.USB0}_USB_AON"]
 
         pmgr = self.adt["/arm-io/pmgr"]
         dev_by_name = {dev.name: dev for dev in pmgr.devices}
@@ -1632,7 +1631,18 @@ class HV(Reloadable):
         # to re-enable XNU serial output for newer macOS versions
         self.adt["defaults"].serial_device = getattr(self.adt["/arm-io/uart0"], "AAPL,phandle")
 
-        if self.iodev >= IODEV.USB0:
+        if self.iodev == IODEV.NET:
+            for name in ("/arm-io/apcie/pci-bridge2",
+                         "/arm-io/dart-apcie2",
+                         "/arm-io/apcie2-piodma",
+                        ):
+                print(f"Removing ADT node {name}")
+                try:
+                    del self.adt[name]
+                except KeyError:
+                    pass
+
+        if IODEV.USB0 <= self.iodev <= IODEV.USB7:
             idx = self.iodev - IODEV.USB0
             for prefix in ("/arm-io/dart-usb%d",
                            "/arm-io/atc-phy%d",
