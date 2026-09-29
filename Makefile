@@ -61,7 +61,7 @@ BASE_CFLAGS := -O2 -Wall -g -Wundef -Werror=strict-prototypes -fno-common -fno-P
 	-Wsign-compare -Wunused-parameter -Wno-multichar \
 	-ffreestanding -fpic -ffunction-sections -fdata-sections \
 	-nostdinc -isystem $(shell $(CC) -print-file-name=include) -isystem sysinc \
-	-Isrc -Isrc/hv \
+	-Isrc -Isrc/hv -Isrc/net \
 	-fno-stack-protector -mstrict-align -march=armv8.2-a \
 	$(EXTRA_CFLAGS)
 
@@ -128,6 +128,9 @@ DCP_OBJECTS := $(patsubst %,dcp/%, \
 	dptx_port_ep.o \
 	parser.o \
 	system_ep.o)
+
+NET_OBJECTS := $(patsubst %,net/%, \
+	bcm57762.o)
 
 HV_OBJECTS := $(patsubst %,hv/%, \
 	hv.o \
@@ -201,6 +204,7 @@ OBJECTS := \
 	$(CHICKENS_OBJECTS) \
 	$(DCP_OBJECTS) \
 	$(HV_OBJECTS) \
+	$(NET_OBJECTS) \
 	$(MINILZLIB_OBJECTS) $(TINF_OBJECTS) $(DLMALLOC_OBJECTS) $(LIBFDT_OBJECTS)
 
 FP_OBJECTS := \
@@ -260,7 +264,7 @@ build/%.o: src/%.c build-tag build-cfg
 
 # special target for usage by m1n1.loadobjs
 invoke_cc:
-	$(QUIET)$(CC) -c $(CFLAGS) -Isrc -Isrc/hv -o $(OBJFILE) $(CFILE)
+	$(QUIET)$(CC) -c $(CFLAGS) -Isrc -Isrc/hv -Isrc/net -o $(OBJFILE) $(CFILE)
 
 build/$(NAME).elf: $(BUILD_ALL_OBJS) m1n1.ld
 	$(QUIET)echo "  LD    $@"
