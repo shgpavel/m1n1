@@ -171,7 +171,6 @@ static bool handle_virtio(struct exc_info *ctx, u64 addr, u64 *val, bool write, 
     struct virtio_dev *dev;
     struct virtio_q *q;
     UNUSED(ctx);
-    UNUSED(width);
 
     dev = dev_by_base(addr & ~0xfff);
     if (!dev)
@@ -248,10 +247,10 @@ static bool handle_virtio(struct exc_info *ctx, u64 addr, u64 *val, bool write, 
                 *val = dev->irqstatus;
                 break;
             case 0x100 ... 0x1000:
-                if (addr - 0x100 < dev->config_len)
-                    *val = dev->config[addr - 0x100];
-                else
-                    *val = 0;
+                *val = 0;
+                for (int i = 0; i < (1 << min(width, 3)); i++)
+                    if (addr - 0x100 + i < dev->config_len)
+                        *val |= (u64)dev->config[addr - 0x100 + i] << (8 * i);
                 break;
             default:
                 q = dev->currq;
