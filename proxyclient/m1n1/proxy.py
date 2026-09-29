@@ -471,6 +471,7 @@ class IODEV(IntEnum):
     USB5 = 9
     USB6 = 10
     USB7 = 11
+    NET = 12
 
 class USAGE(IntFlag):
     CONSOLE = (1 << 0)
