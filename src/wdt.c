@@ -9,7 +9,10 @@
 #define WDT_ALARM 0x14
 #define WDT_CTL   0x1c
 
+#define WDT_CLOCK 24000000
+
 static u64 wdt_base = 0;
+static bool wdt_armed = false;
 
 void wdt_disable(void)
 {
@@ -28,6 +31,7 @@ void wdt_disable(void)
 
     printf("Primary WDT register @ 0x%lx\n", wdt_base);
     write32(wdt_base + WDT_CTL, 0);
+    wdt_armed = false;
     printf("Primary WDT disabled\n");
 
     // disable secondary watchdog if wdt-version is 2 or 3
@@ -46,6 +50,33 @@ void wdt_disable(void)
         write32(wdt_2nd, 0);
         printf("Secondary WDT disabled\n");
     }
+}
+
+void wdt_arm(u32 seconds)
+{
+    if (!wdt_base)
+        return;
+
+    if (!seconds) {
+        write32(wdt_base + WDT_CTL, 0);
+        wdt_armed = false;
+        printf("Primary WDT disabled\n");
+        return;
+    }
+
+    u64 ticks = min((u64)seconds * WDT_CLOCK, 0xffffffffUL);
+
+    write32(wdt_base + WDT_ALARM, ticks);
+    write32(wdt_base + WDT_COUNT, 0);
+    write32(wdt_base + WDT_CTL, 4);
+    wdt_armed = true;
+    printf("Primary WDT armed: reset after %lu s without a kick\n", ticks / WDT_CLOCK);
+}
+
+void wdt_kick(void)
+{
+    if (wdt_armed)
+        write32(wdt_base + WDT_COUNT, 0);
 }
 
 void wdt_reboot(void)

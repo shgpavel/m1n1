@@ -543,6 +543,7 @@ class M1N1Proxy(Reloadable):
     P_EL3_CALL = 0x012
     P_GET_CHIPID = 0x013
     P_GET_CPU_FEATURES = 0x014
+    P_WDT_SET = 0x015
 
     P_WRITE64 = 0x100
     P_WRITE32 = 0x101
@@ -823,6 +824,8 @@ class M1N1Proxy(Reloadable):
         self.request(self.P_PUT_SIMD_STATE, buf)
     def reboot(self):
         self.request(self.P_REBOOT, no_reply=True)
+    def wdt_set(self, seconds):
+        self.request(self.P_WDT_SET, seconds)
     def sleep(self, deep=False):
         self.request(self.P_SLEEP, deep, no_reply=True)
     def el3_call(self, addr, *args):

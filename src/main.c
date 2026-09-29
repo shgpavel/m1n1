@@ -160,6 +160,9 @@ void m1n1_main(void)
     smp_init();
 #endif
     wdt_disable();
+#ifdef WDT_TIMEOUT
+    wdt_arm(WDT_TIMEOUT);
+#endif
 #ifndef BRINGUP
     pmgr_init();
 #ifdef USE_DEBUG_USB

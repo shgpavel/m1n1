@@ -81,6 +81,10 @@ else
 CARGO_FLAGS :=
 endif
 
+ifneq ($(WDT_TIMEOUT),)
+CFG += WDT_TIMEOUT=$(WDT_TIMEOUT)
+endif
+
 ifeq ($(CHAINLOADING),1)
 CFG += CHAINLOADING
 CARGO_FLAGS += --features chainload
@@ -289,7 +293,7 @@ build-tag src/../build/build_tag.h &:
 
 build-cfg src/../build/build_cfg.h &:
 	$(QUIET)mkdir -p build
-	$(QUIET)for i in $(CFG); do echo "#define $$i"; done > build/build_cfg.tmp
+	$(QUIET)for i in $(CFG); do echo "#define $$i"; done | sed 's/=/ /' > build/build_cfg.tmp
 	$(QUIET)cmp -s build/build_cfg.h build/build_cfg.tmp 2>/dev/null || \
 	( mv -f build/build_cfg.tmp build/build_cfg.h && echo "  CFG   build/build_cfg.h" )
 

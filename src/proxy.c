@@ -27,6 +27,7 @@
 #include "uartproxy.h"
 #include "usb.h"
 #include "utils.h"
+#include "wdt.h"
 #include "xnuboot.h"
 
 #include "minilzlib/minlzma.h"
@@ -42,6 +43,7 @@ int proxy_process(ProxyRequest *request, ProxyReply *reply)
     reply->opcode = request->opcode;
     reply->status = S_OK;
     reply->retval = 0;
+    wdt_kick();
     switch (request->opcode) {
         case P_NOP:
             break;
@@ -125,6 +127,9 @@ int proxy_process(ProxyRequest *request, ProxyReply *reply)
             break;
         case P_REBOOT:
             reboot();
+            break;
+        case P_WDT_SET:
+            wdt_arm(request->args[0]);
             break;
         case P_SLEEP:
             cpu_sleep(request->args[0]);
