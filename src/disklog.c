@@ -19,7 +19,6 @@
 #define DISKLOG_NSID       1
 #define DISKLOG_BLOCK      SZ_4K
 #define DISKLOG_SIZE       ((DISKLOG_ENABLED ? 64 : 1) * DISKLOG_BLOCK)
-#define DISKLOG_PART_NAME  "newsahi-log"
 #define DISKLOG_PART_MAGIC "NEWSAHI-DISKLOG1"
 #define DISKLOG_REC_MAGIC  "M1N1DLOG"
 
@@ -55,17 +54,10 @@ static u32 le32(const u8 *p)
     return v;
 }
 
-static bool name_eq(const u8 *utf16, const char *s)
-{
-    for (int i = 0; i < 36; i++) {
-        u16 c = utf16[2 * i] | (utf16[2 * i + 1] << 8);
-        if (c != (u8)s[i])
-            return false;
-        if (!s[i])
-            return true;
-    }
-    return false;
-}
+static const u8 disklog_type[16] = {
+    0xa0, 0x4d, 0x62, 0x23, 0x0a, 0x1b, 0x0c, 0x4e,
+    0x8e, 0x03, 0x89, 0xba, 0x16, 0x73, 0x6a, 0xd5,
+};
 
 static bool disklog_probe(void)
 {
@@ -89,19 +81,19 @@ static bool disklog_probe(void)
             return false;
 
         const u8 *e = blk + (i % per_block) * esize;
-        if (!name_eq(e + 56, DISKLOG_PART_NAME))
+        if (memcmp(e, disklog_type, sizeof(disklog_type)))
             continue;
 
         u64 start = le64(e + 32);
         u64 end = le64(e + 40);
         if (end - start + 1 < 2 + DISKLOG_SIZE / DISKLOG_BLOCK) {
-            printf("disklog: %s is too small\n", DISKLOG_PART_NAME);
+            printf("disklog: log partition is too small\n");
             return false;
         }
 
         if (!nvme_read(DISKLOG_NSID, start, blk) ||
             memcmp(blk, DISKLOG_PART_MAGIC, strlen(DISKLOG_PART_MAGIC))) {
-            printf("disklog: %s lacks its magic, leaving it alone\n", DISKLOG_PART_NAME);
+            printf("disklog: log partition lacks its magic, leaving it alone\n");
             return false;
         }
 
@@ -110,12 +102,11 @@ static bool disklog_probe(void)
         if (nvme_read(DISKLOG_NSID, rec_lba, blk) && !memcmp(blk, DISKLOG_REC_MAGIC, 8))
             seq = ((struct disklog_header *)blk)->seq + 1;
 
-        printf("disklog: writing record %d to %s at LBA 0x%lx\n", seq, DISKLOG_PART_NAME,
-               rec_lba);
+        printf("disklog: writing record %d at LBA 0x%lx\n", seq, rec_lba);
         return true;
     }
 
-    printf("disklog: no %s partition\n", DISKLOG_PART_NAME);
+    printf("disklog: no log partition\n");
     return false;
 }
 
