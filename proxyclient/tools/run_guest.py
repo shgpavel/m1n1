@@ -9,6 +9,10 @@ from io import BytesIO
 def volumespec(s):
     return tuple(s.split(":", 2))
 
+def blockspec(s):
+    path, _, mode = s.rpartition(":") if s.endswith(":ro") else (s, "", "")
+    return (path, mode == "ro")
+
 parser = argparse.ArgumentParser(description='Run a Mach-O payload under the hypervisor')
 parser.add_argument('-s', '--symbols', type=pathlib.Path)
 parser.add_argument('-m', '--script', type=pathlib.Path, action='append', default=[])
@@ -29,6 +33,9 @@ parser.add_argument('-v', '--volume', type=volumespec, action='append',
                     help='Attach a 9P virtio device for file export to the guest. The argument is a host path to the '
                          'exported tree, joined by colon (\':\') with a tag under which the tree will be advertised '
                          'on the guest side.')
+parser.add_argument('-b', '--block', type=blockspec, action='append', default=[],
+                    help='Attach a virtio block device backed by a host file or block device. '
+                         'Append \':ro\' to export it read-only.')
 parser.add_argument('payload', type=pathlib.Path)
 parser.add_argument('boot_args', default=[], nargs="*")
 args = parser.parse_args()
@@ -39,7 +46,7 @@ from m1n1.utils import *
 from m1n1.shell import run_shell
 from m1n1.sysreg import *
 from m1n1.hv import HV
-from m1n1.hv.virtio import Virtio9PTransport
+from m1n1.hv.virtio import Virtio9PTransport, VirtioBlk
 from m1n1.hw.pmu import PMU
 
 iface = UartInterface()
@@ -99,6 +106,9 @@ if args.debug_xnu:
 if args.volume:
     for path, tag in args.volume:
         hv.attach_virtio(Virtio9PTransport(root=path, tag=tag))
+
+for path, ro in args.block:
+    hv.attach_virtio(VirtioBlk(path, readonly=ro))
 
 if args.logfile:
     hv.set_logfile(args.logfile.open("w"))
