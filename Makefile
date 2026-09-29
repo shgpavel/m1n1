@@ -130,7 +130,8 @@ DCP_OBJECTS := $(patsubst %,dcp/%, \
 	system_ep.o)
 
 NET_OBJECTS := $(patsubst %,net/%, \
-	bcm57762.o)
+	bcm57762.o \
+	eth.o)
 
 HV_OBJECTS := $(patsubst %,hv/%, \
 	hv.o \
