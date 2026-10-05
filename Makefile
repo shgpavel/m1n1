@@ -85,6 +85,10 @@ ifeq ($(DISKLOG),1)
 CFG += DISKLOG
 endif
 
+ifeq ($(NO_DISPLAY),1)
+CFG += NO_DISPLAY
+endif
+
 ifneq ($(WDT_TIMEOUT),)
 CFG += WDT_TIMEOUT=$(WDT_TIMEOUT)
 endif
