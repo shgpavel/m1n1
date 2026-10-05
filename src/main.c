@@ -167,6 +167,7 @@ void m1n1_main(void)
 #endif
 #ifndef BRINGUP
     pmgr_init();
+    disklog_flush();
 #ifdef USE_DEBUG_USB
     tps6598x_enable_debugusb();
 #endif
@@ -184,6 +185,7 @@ void m1n1_main(void)
     fb_set_active(true);
 #endif
 #endif
+    disklog_flush();
 
     cpufreq_fixup();
     sep_init();
