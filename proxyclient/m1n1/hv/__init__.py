@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: GPL-2.0-or-later
 import io, sys, traceback, struct, array, bisect, os, plistlib, signal, runpy
 from construct import *
 
@@ -1538,18 +1538,11 @@ class HV(Reloadable):
             self.map_hook(addr, 8, write=wh)
             self.add_tracer(irange(addr, 8), "CPU HACK", TraceMode.RESERVED)
 
-        def cpu_state_rh(base, off, width):
-            data = ret = self.p.read64(base + off)
-            die = base // 0x20_0000_0000
-            cluster = (base >> 24) & 0xf
-            cpu = (base >> 20) & 0xf
-            for i, j in self.started_cpus.items():
-                if j == (die, cluster, cpu):
-                    break
-            else:
-                ret &= ~0xff
-            self.log(f"CPU STATE R {base:x}+{off:x}:{width} = 0x{data:x} -> 0x{ret:x}")
-            return ret
+        # These are installed by m1n1 in hv.c, just reserve them here to prevent anyone
+        # from overwriting these later
+        for node in self.adt["cpus"]:
+            self.add_tracer(irange(node.cpu_impl_reg[0] + 0x100, 8),
+                            "CPU STATE HACK", TraceMode.RESERVED)
 
         def cpustart_wh(base, off, data, width):
             self.log(f"CPUSTART W {base:x}+{off:x}:{width} = 0x{data:x}")
@@ -1560,9 +1553,6 @@ class HV(Reloadable):
                 for i in range(32):
                     if data & (1 << i):
                         self.start_secondary(die, cluster, i)
-                        cpu_state = 0x210050100 | (die << 27) | (cluster << 24) | (i << 20)
-                        self.map_hook(cpu_state, 8, read=cpu_state_rh)
-                        self.add_tracer(irange(addr, 8), "CPU STATE HACK", TraceMode.RESERVED)
 
         die_count = self.adt["/arm-io"].die_count if hasattr(self.adt["/arm-io"], "die-count") else 1
 
@@ -1574,7 +1564,7 @@ class HV(Reloadable):
                 cpu_start = 0x34000 + die * 0x20_0000_0000
             elif chip_id in (0x6020, 0x6021, 0x6022):
                 cpu_start = 0x28000 + die * 0x20_0000_0000
-            elif chip_id in (0x6031, 0x6034, 0x6040, 0x6041):
+            elif chip_id in (0x6031, 0x6032, 0x6034, 0x6040, 0x6041):
                 cpu_start = 0x88000 + die * 0x20_0000_0000
             else:
                 self.log("CPUSTART unknown for this SoC!")

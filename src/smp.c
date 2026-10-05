@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: MIT */
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 
 #include "smp.h"
 #include "adt.h"
@@ -329,6 +329,7 @@ int smp_init(void)
             cpu_start_off = CPU_START_OFF_T8112;
             break;
         case T6031:
+        case T6032:
         case T6034:
         case T6040:
         case T6041:

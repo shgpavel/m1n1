@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: MIT */
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 
 #include "../build/build_cfg.h"
 
@@ -401,6 +401,12 @@ int display_configure(const char *config)
     printf("display: skip configuration (NO_DISPLAY)\n");
     return 0;
 #endif
+
+    if (os_firmware.version >= V15_0B1) {
+        printf("display: Unsupported firmware version %s, skipping configuration\n",
+               os_firmware.string);
+        return 0;
+    }
 
     display_parse_mode(config, &want, &opts);
 

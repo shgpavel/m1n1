@@ -1,10 +1,9 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: GPL-2.0-or-later
 #![cfg_attr(not(test), no_std)]
 #![deny(unsafe_op_in_unsafe_fn)]
 #![feature(cfg_version)]
 #![feature(alloc_error_handler)]
 #![cfg_attr(not(version("1.82")), feature(new_uninit))]
-#![feature(stmt_expr_attributes)]
 #![cfg_attr(all(version("1.82"), not(version("1.92"))), feature(new_zeroed_alloc))]
 
 #[allow(unused_imports)]

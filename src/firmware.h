@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: MIT */
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 
 #ifndef __FIRMWARE_H__
 #define __FIRMWARE_H__
@@ -184,6 +184,13 @@ enum fw_version {
     V26_3B2,
     V26_3,
     V26_4,
+    V26_5,
+    V26_5_2,
+    V26_6,
+    V26_6_2,
+    V26_7,
+    V26_7_1,
+    V27_0,
     NUM_FW_VERSIONS,
 };
 

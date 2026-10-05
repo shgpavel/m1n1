@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: MIT */
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 
 #include <stdint.h>
 
@@ -313,8 +313,37 @@ static int dt_set_chosen(void)
     if (fdt_setprop(dt, node, "asahi,m1n1-stage2-version", m1n1_version, strlen(m1n1_version) + 1))
         bail("FDT: couldn't set asahi,m1n1-stage2-version\n");
 
-    if (dt_set_rng_seed_sep(node))
-        return dt_set_rng_seed_adt(node);
+    if (dt_set_rng_seed_sep(node)) {
+        if (dt_set_rng_seed_adt(node))
+            bail("FDT: couldn't set random seed");
+    }
+
+    if (!cpu_features->apple_sysregs_unlocked) {
+        /*
+         * M4 and later lose architectural state in WFI and WFIT. Add the
+         * bootargs to prevent Linux from crashing in the idle loop and delay
+         * function.
+         */
+        const char to_append[] = " idle=nop arm64.nowfxt";
+        printf("FDT: appending to bootargs:%s\n", to_append);
+
+        /*
+         * fdt_appendprop_string would create another property value:
+         * "a", "b". But we want "ab", so manually create or grow the prop,
+         * then overwrite the \0 of the existing string.
+         */
+        int oldlen, newlen;
+        void *prop_data;
+
+        if (!fdt_get_property(dt, node, "bootargs", &oldlen) || oldlen < 1)
+            oldlen = 1;
+        newlen = oldlen + sizeof(to_append) - 1;
+
+        if (fdt_setprop_placeholder(dt, node, "bootargs", newlen, &prop_data))
+            bail("FDT: failed to append to 'bootargs' property\n");
+
+        strncpy(prop_data + oldlen - 1, to_append, sizeof(to_append));
+    }
 
     return 0;
 }
@@ -2808,8 +2837,8 @@ int kboot_prepare_dt(void *fdt)
         // on the secondary (non-boot) cores. Add a reserved-memory region to
         // prevent Linux from crashing when allocating this memory and writing
         // to it from a secondary core.
-        u64 ro_start = mrs(CTRR_M4_LWR_EL2);
-        u64 ro_end = ALIGN_UP(mrs(CTRR_M4_UPR_EL2), SZ_4K);
+        u64 ro_start = mrs(SYS_IMP_APL_CTRR_C_LWR_EL1);
+        u64 ro_end = ALIGN_UP(mrs(SYS_IMP_APL_CTRR_C_UPR_EL1), SZ_4K);
         if (ro_end - ro_start > 12 * SZ_4K)
             printf("WARNING: M4+ SMP-RO is large (48KB)");
         if (fdt_add_mem_rsv(dt, ro_start, ro_end - ro_start))
