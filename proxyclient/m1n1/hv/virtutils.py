@@ -18,6 +18,7 @@ def usable_aic_irq_range(adt):
 	return {
 		"aic,1": range(0, 0x400),
 		"aic,2": range(0, 0x1000),
+		"aic,3": range(0, 0x800),
 	}.get(adt["/arm-io/aic"].compatible[0])
 
 def alloc_aic_irq(adt):
