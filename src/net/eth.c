@@ -21,6 +21,8 @@
 #define ETH_DMA_IOVA 0x100000
 #define ETH_DMA_SIZE (2 * SZ_1M)
 
+#define ETH_LINK_TIMEOUT_MS 500
+
 #define PCI_ID          0x00
 #define PCI_COMMAND     0x04
 #define PCI_BAR0        0x10
@@ -41,12 +43,27 @@
 #define ADT_PCI_SPACE     GENMASK(25, 24)
 #define ADT_PCI_SPACE_M32 2
 
+#define GPIO_DATA     BIT(0)
+#define GPIO_MODE     GENMASK(3, 1)
+#define GPIO_MODE_OUT 1
+#define GPIO_PERIPH   GENMASK(6, 5)
+
+struct adt_function_gpio {
+    u32 phandle;
+    char four_cc[4];
+    u32 pin;
+    u32 flags;
+};
+
 static struct {
     bool up;
     u64 ecam;
     u32 port;
     u64 pci_base, cpu_base, win_size;
     u8 mac[6];
+    u64 perst, clkreq;
+    u32 perst_pin, clkreq_pin;
+    u32 refclk_to_perst_us, perst_to_config_ms;
     u64 bar0;
     u64 iova;
     void *dma;
@@ -69,6 +86,31 @@ static void nic_cfg_write32(void *ctx, u16 off, u32 val)
 {
     UNUSED(ctx);
     write32(cfg(ETH_BUS, 0, off), val);
+}
+
+static u64 gpio_pin_reg(const struct adt_function_gpio *f)
+{
+    int node = adt_path_offset(adt, "/arm-io");
+    if (node < 0)
+        return 0;
+
+    ADT_FOREACH_CHILD(adt, node)
+    {
+        u32 phandle;
+        if (ADT_GETPROP(adt, node, "AAPL,phandle", &phandle) < 0 || phandle != f->phandle)
+            continue;
+
+        char path[64];
+        int trace[8];
+        u64 base;
+        snprintf(path, sizeof(path), "/arm-io/%s", adt_get_name(adt, node));
+        if (adt_path_offset_trace(adt, path, trace) < 0 ||
+            adt_get_reg(adt, trace, "reg", 0, &base, NULL))
+            return 0;
+        return base + 4 * f->pin;
+    }
+
+    return 0;
 }
 
 static int eth_parse_adt(void)
@@ -104,6 +146,22 @@ static int eth_parse_adt(void)
         return -1;
     }
 
+    struct adt_function_gpio perst, clkreq;
+    if (ADT_GETPROP(adt, bridge, "function-perst", &perst) < 0 ||
+        !(eth.perst = gpio_pin_reg(&perst))) {
+        printf("eth: no PERST# GPIO on %s\n", ETH_BRIDGE_PATH);
+        return -1;
+    }
+    eth.perst_pin = perst.pin;
+    if (ADT_GETPROP(adt, bridge, "function-clkreq", &clkreq) >= 0) {
+        eth.clkreq = gpio_pin_reg(&clkreq);
+        eth.clkreq_pin = clkreq.pin;
+    }
+    eth.refclk_to_perst_us = 100;
+    eth.perst_to_config_ms = 100;
+    ADT_GETPROP(adt, bridge, "t-refclk-to-perst", &eth.refclk_to_perst_us);
+    ADT_GETPROP(adt, bridge, "perst-to-config", &eth.perst_to_config_ms);
+
     int nic = adt_path_offset(adt, ETH_NIC_PATH);
     if (nic < 0 || ADT_GETPROP_ARRAY(adt, nic, "local-mac-address", eth.mac) < 0) {
         printf("eth: no MAC address in %s\n", ETH_NIC_PATH);
@@ -115,6 +173,22 @@ static int eth_parse_adt(void)
     printf("eth: MAC %02x:%02x:%02x:%02x:%02x:%02x\n", eth.mac[0], eth.mac[1], eth.mac[2],
            eth.mac[3], eth.mac[4], eth.mac[5]);
     return 0;
+}
+
+static int eth_reset_nic(void)
+{
+    printf("eth: PERST# GPIO %d = 0x%x", eth.perst_pin, read32(eth.perst));
+    if (eth.clkreq)
+        printf(", CLKREQ# GPIO %d = 0x%x", eth.clkreq_pin, read32(eth.clkreq));
+    printf("\n");
+
+    mask32(eth.perst, GPIO_DATA | GPIO_MODE | GPIO_PERIPH, FIELD_PREP(GPIO_MODE, GPIO_MODE_OUT));
+    udelay(eth.refclk_to_perst_us);
+    set32(eth.perst, GPIO_DATA);
+    mdelay(eth.perst_to_config_ms);
+    printf("eth: PERST# released (0x%x)\n", read32(eth.perst));
+
+    return pcie_link_up(eth.port, ETH_LINK_TIMEOUT_MS);
 }
 
 static int eth_setup_pci(void)
@@ -185,6 +259,8 @@ int eth_init(void)
         printf("eth: PCIe init failed\n");
         return -1;
     }
+    if (eth_reset_nic() < 0)
+        printf("eth: no PCIe link to the NIC\n");
     if (eth_setup_pci() < 0 || eth_setup_dma() < 0)
         return -1;
 
