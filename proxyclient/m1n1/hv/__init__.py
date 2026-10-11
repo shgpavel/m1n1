@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
-import io, sys, traceback, struct, array, bisect, os, plistlib, signal, runpy
+import io, sys, traceback, struct, array, bisect, os, plistlib, re, signal, runpy
 from construct import *
 
 from ..asm import ARMAsm
@@ -1497,8 +1497,8 @@ class HV(Reloadable):
         pmgr_hooks = []
 
         def hook_pmgr_dev(dev):
-            addr = self.adt.pmgr_dev_get_addr(dev)
-            pmgr_hooks.append(addr)
+            if not dev.flags.no_ps:
+                pmgr_hooks.append(self.adt.pmgr_dev_get_addr(dev))
             for idx in self.adt.pmgr_dev_get_parents(dev):
                 if idx in dev_by_id:
                     hook_pmgr_dev(dev_by_id[idx])
@@ -1507,9 +1507,16 @@ class HV(Reloadable):
             dev = dev_by_name[name]
             hook_pmgr_dev(dev)
 
+        if self.iodev == IODEV.NET:
+            # The guest has no PCIe nodes and would power the NIC's controller off
+            for node in self.u.adt["/arm-io"]:
+                if re.fullmatch(r"apcie\d*", node.name):
+                    for idx in node.clock_gates:
+                        hook_pmgr_dev(dev_by_id[idx])
+
         pmgr0_start = pmgr.get_reg(0)[0]
 
-        for addr in pmgr_hooks:
+        for addr in dict.fromkeys(pmgr_hooks):
             self.map_hook(addr, 4, write=wh, read=rh)
             #TODO : turn into a real tracer
             self.add_tracer(irange(addr, 4), "PMGR HACK", TraceMode.RESERVED)
@@ -1522,6 +1529,16 @@ class HV(Reloadable):
         for addr in pg_overrides:
             self.map_hook(addr, 4, read=lambda base, off, width: pg_overrides[base + off])
             self.add_tracer(irange(addr, 4), "PMGR HACK", TraceMode.RESERVED)
+
+        if self.iodev == IODEV.NET:
+            # m1n1 keeps the watchdog armed and kicks it while the host talks to
+            # it, so a hung hypervisor still resets the machine: hide it from the guest
+            wdt = self.adt["/arm-io/wdt"]
+            for i in range(len(wdt.reg)):
+                addr, size = wdt.get_reg(i)
+                self.map_hook(addr, size, read=lambda base, off, width: 0,
+                              write=lambda base, off, data, width: None)
+                self.add_tracer(irange(addr, size), "WDT", TraceMode.RESERVED)
 
         cpu_hack = [
             # 0x210e20020,
@@ -1622,15 +1639,13 @@ class HV(Reloadable):
         self.adt["defaults"].serial_device = getattr(self.adt["/arm-io/uart0"], "AAPL,phandle")
 
         if self.iodev == IODEV.NET:
-            for name in ("/arm-io/apcie/pci-bridge2",
-                         "/arm-io/dart-apcie2",
-                         "/arm-io/apcie2-piodma",
-                        ):
-                print(f"Removing ADT node {name}")
-                try:
-                    del self.adt[name]
-                except KeyError:
-                    pass
+            # The NIC shares its controller with other ports, and the guest's
+            # m1n1 or kernel would reset it, so hide the whole controller
+            names = [node.name for node in self.adt["/arm-io"]
+                     if re.fullmatch(r"(dart-)?apcie\d*(-piodma)?", node.name)]
+            for name in names:
+                print(f"Removing ADT node /arm-io/{name}")
+                del self.adt[f"/arm-io/{name}"]
 
         if IODEV.USB0 <= self.iodev <= IODEV.USB7:
             idx = self.iodev - IODEV.USB0
