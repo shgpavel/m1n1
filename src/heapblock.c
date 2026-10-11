@@ -2,6 +2,7 @@
 
 #include "heapblock.h"
 #include "assert.h"
+#include "cpu_regs.h"
 #include "types.h"
 #include "utils.h"
 #include "xnuboot.h"
@@ -24,6 +25,17 @@ void heapblock_init(void)
 
     heap_base = top_of_kernel_data;
     heapblock_alloc(0); // align base
+
+    if (!cpu_features->apple_sysregs_unlocked) {
+        u64 ro_start = mrs(SYS_IMP_APL_CTRR_C_LWR_EL1);
+        u64 ro_end = ALIGN_UP(mrs(SYS_IMP_APL_CTRR_C_UPR_EL1), SZ_4K);
+
+        if (ro_end > ro_start && ro_end > (u64)heap_base &&
+            ro_start < (u64)heap_base + 256 * SZ_1M) {
+            printf("Heap: skipping the SMP-RO area 0x%lx..0x%lx\n", ro_start, ro_end);
+            heap_base = (void *)ro_end;
+        }
+    }
 
     printf("Heap base: %p\n", heap_base);
 }
