@@ -361,6 +361,19 @@ class UartInterface(Reloadable):
             else:
                 raise UartTimeout("Reconnection timed out")
             print(" Connected")
+            # Over the network the device stays, and m1n1 answers only once
+            # it has brought Ethernet back up
+            for i in range(20):
+                try:
+                    self.nop()
+                    break
+                except UartTimeout:
+                    print("Waiting for m1n1 to answer...")
+            else:
+                raise UartTimeout("m1n1 did not answer after the reboot")
+            time.sleep(0.5)
+            self.dev.reset_input_buffer()
+            self.nop()
 
     def wait_and_handle_boot(self):
         self.handle_boot(self.wait_boot())
