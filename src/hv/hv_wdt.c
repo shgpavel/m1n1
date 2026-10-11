@@ -117,6 +117,11 @@ void hv_wdt_resume(void)
     sysop("dsb ish");
 }
 
+u64 hv_wdt_get_breadcrumbs(int cpu)
+{
+    return hv_wdt_breadcrumbs[cpu];
+}
+
 void hv_wdt_breadcrumb(char c)
 {
     u64 cpu = mrs(TPIDR_EL2);

@@ -339,12 +339,20 @@ static void hv_enter_secondary(void *entry, u64 regs[4])
 
 void hv_start_secondary(int cpu, void *entry, u64 regs[4])
 {
+    if (!smp_is_alive(cpu)) {
+        printf("HV: CPU %d is not running m1n1, not starting it\n", cpu);
+        return;
+    }
+
     printf("HV: Initializing secondary %d\n", cpu);
     iodev_console_flush();
 
     mmu_init_secondary(cpu);
     iodev_console_flush();
-    smp_call4(cpu, hv_init_secondary, (u64)&hv_secondary_info, 0, 0, 0);
+    if (smp_call4_timeout(cpu, hv_init_secondary, (u64)&hv_secondary_info, 0, 0, 0, 1000000)) {
+        printf("HV: CPU %d did not answer, breadcrumbs %lx\n", cpu, hv_wdt_get_breadcrumbs(cpu));
+        return;
+    }
     smp_wait(cpu);
     iodev_console_flush();
 
@@ -353,7 +361,12 @@ void hv_start_secondary(int cpu, void *entry, u64 regs[4])
     __atomic_or_fetch(&hv_cpus_in_guest, BIT(cpu), __ATOMIC_ACQUIRE);
 
     iodev_console_flush();
-    smp_call4(cpu, hv_enter_secondary, (u64)entry, (u64)regs, 0, 0);
+    if (smp_call4_timeout(cpu, hv_enter_secondary, (u64)entry, (u64)regs, 0, 0, 1000000)) {
+        printf("HV: CPU %d did not enter the guest, breadcrumbs %lx\n", cpu,
+               hv_wdt_get_breadcrumbs(cpu));
+        hv_started_cpus[cpu] = false;
+        __atomic_and_fetch(&hv_cpus_in_guest, ~BIT(cpu), __ATOMIC_ACQUIRE);
+    }
 }
 
 void hv_exit_cpu(int cpu)

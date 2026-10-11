@@ -92,6 +92,7 @@ void hv_wdt_init(void);
 void hv_wdt_start(int cpu);
 void hv_wdt_stop(void);
 void hv_wdt_breadcrumb(char c);
+u64 hv_wdt_get_breadcrumbs(int cpu);
 void hv_do_panic(void);
 
 #define hv_panic(fmt, ...)                                                                         \
