@@ -291,6 +291,7 @@ void eth_shutdown(void)
     for (int sid = 0; sid < 2; sid++)
         if (eth.dart[sid])
             dart_shutdown(eth.dart[sid]);
+    clear32(eth.perst, GPIO_DATA);
     eth.up = false;
 }
 
