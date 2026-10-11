@@ -204,6 +204,7 @@ void m1n1_main(void)
     disklog_flush();
 
     netproxy_shutdown();
+    disklog_flush();
     nvme_shutdown();
     exception_shutdown();
 #ifndef BRINGUP
