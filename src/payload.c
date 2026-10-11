@@ -313,8 +313,10 @@ int payload_run(void)
     while (p)
         p = load_one_payload(p, 0);
 
-    if (net_spec && netproxy_start(net_spec) < 0)
-        printf("Network proxy failed to start\n");
+    if (net_spec && netproxy_start(net_spec) < 0) {
+        printf("Network proxy failed to start, rebooting\n");
+        flush_and_reboot();
+    }
 
     if (chainload_spec) {
         return chainload_load(chainload_spec, chosen, chosen_cnt);
