@@ -307,6 +307,12 @@ class UartInterface(Reloadable):
                     self.handle_boot(data)
                     reply = b''
                     continue
+                if cmdin in (self.REQ_NOP, self.REQ_PROXY, self.REQ_MEMREAD, self.REQ_MEMWRITE):
+                    # Only one request is ever in flight, so this answers one that a client
+                    # gave up on (over the network, m1n1 outlives the client that asked)
+                    print(f"Dropping a stale reply 0x{cmdin:08x}")
+                    reply = b''
+                    continue
                 raise UartCMDError("Reply command mismatch: Expected 0x%08x, got 0x%08x"%(cmd, cmdin))
             if status != self.ST_OK:
                 if status == self.ST_BADCMD:
