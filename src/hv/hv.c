@@ -7,6 +7,7 @@
 #include "display.h"
 #include "gxf.h"
 #include "memory.h"
+#include "netproxy.h"
 #include "pcie.h"
 #include "smp.h"
 #include "string.h"
@@ -125,7 +126,8 @@ static void hv_enable_sme_zt0(void)
 
 void hv_init(void)
 {
-    pcie_shutdown();
+    if (!netproxy_active())
+        pcie_shutdown();
     // Make sure we wake up DCP if we put it to sleep, just quiesce it to match ADT
     if (display_is_external && display_start_dcp() >= 0)
         display_shutdown(DCP_QUIESCED);
