@@ -1634,6 +1634,13 @@ class HV(Reloadable):
             soc_name = "Virtual " + self.adt["product"].product_soc_name + " on m1n1 hypervisor"
         self.adt["product"].product_soc_name = soc_name
 
+        # A guest CPU runs on the host CPU with the same index, which hv_init started.
+        # iBoot sometimes leaves a core running its own code, so m1n1 cannot start it.
+        for node in list(self.adt["/cpus"]):
+            if node.state != "running" and not self.p.smp_is_alive(node.cpu_id):
+                print(f"Removing /cpus/{node.name}: m1n1 could not start it")
+                del self.adt[f"/cpus/{node.name}"]
+
         # change default serial to uart0 instead of UART-via-dockchannel
         # to re-enable XNU serial output for newer macOS versions
         self.adt["defaults"].serial_device = getattr(self.adt["/arm-io/uart0"], "AAPL,phandle")
