@@ -267,14 +267,14 @@ static int pcie_init_controller(int controller, const char *path)
     u32 link_width = 1;
     const struct fuse_bits *fuse_bits;
 
-    state->initialized = false;
-    state->num_phys = 1;
-
     adt_offset = adt_path_offset_trace(adt, path, adt_path);
     if (adt_offset < 0) {
         printf("pcie: Error getting node %s\n", path);
         return -1;
     }
+
+    state->initialized = false;
+    state->num_phys = 1;
 
     if (adt_is_compatible(adt, adt_offset, "apcie,t8103")) {
         fuse_bits = pcie_fuse_bits_t8103;
