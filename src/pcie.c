@@ -54,6 +54,9 @@
 
 /* Port registers */
 
+#define APCIE_PORT_LTSSMCTL       0x080
+#define APCIE_PORT_LTSSMCTL_START BIT(0)
+
 #define APCIE_PORT_LINKSTS      0x208
 #define APCIE_PORT_LINKSTS_UP   BIT(0)
 #define APCIE_PORT_LINKSTS_BUSY BIT(2)
@@ -854,6 +857,32 @@ int pcie_init(void)
         pcie_initialized = true;
 
     return success ? 0 : -1;
+}
+
+int pcie_link_up(u32 port, u32 timeout_ms)
+{
+    struct state *state = &controllers[APCIE];
+
+    if (!state->initialized || port >= state->port_count || !state->port_base[port])
+        return -1;
+
+    u64 base = state->port_base[port];
+    u32 sts = read32(base + APCIE_PORT_LINKSTS);
+    printf("pcie: Port %d LINKSTS 0x%x, STATUS 0x%x\n", port, sts,
+           read32(base + APCIE_PORT_STATUS));
+
+    if (!(sts & APCIE_PORT_LINKSTS_UP)) {
+        write32(base + APCIE_PORT_LTSSMCTL, APCIE_PORT_LTSSMCTL_START);
+        if (poll32(base + APCIE_PORT_LINKSTS, APCIE_PORT_LINKSTS_UP, APCIE_PORT_LINKSTS_UP,
+                   timeout_ms * 1000)) {
+            printf("pcie: Port %d link down, LINKSTS 0x%x\n", port,
+                   read32(base + APCIE_PORT_LINKSTS));
+            return -1;
+        }
+    }
+
+    printf("pcie: Port %d link up, LINKSTS 0x%x\n", port, read32(base + APCIE_PORT_LINKSTS));
+    return 0;
 }
 
 int pcie_shutdown(void)
