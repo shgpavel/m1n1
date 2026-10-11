@@ -261,6 +261,141 @@ struct state {
 
 static struct state controllers[NUM_CONTROLLERS];
 
+static int pcie_init_phy(struct state *state, int controller, const char *path, int adt_offset,
+                         const struct fuse_bits *fuse_bits)
+{
+    if (!adt_getprop(adt, adt_offset, "apcie-axi2af-tunables", NULL)) {
+        printf("pcie: No axi2af tunables\n");
+    } else if (tunables_apply_local(path, "apcie-axi2af-tunables", state->pcie_regs->axi_idx)) {
+        printf("pcie: Error applying %s for %s\n", "apcie-axi2af-tunables", path);
+        return -1;
+    }
+
+    /* ??? */
+    if (controller == APCIE)
+        write32(state->rc_base + 0x4, 0);
+
+    if (!adt_getprop(adt, adt_offset, "apcie-common-tunables", NULL)) {
+        printf("pcie: No common tunables\n");
+    } else if (tunables_apply_local(path, "apcie-common-tunables", state->pcie_regs->rc_idx)) {
+        printf("pcie: Error applying %s for %s\n", "apcie-common-tunables", path);
+        return -1;
+    }
+
+    /*
+     * Initialize PHY.
+     */
+
+    if (!adt_getprop(adt, adt_offset, "apcie-phy-tunables", NULL)) {
+        printf("pcie: No PHY tunables\n");
+    } else if (tunables_apply_local(path, "apcie-phy-tunables", state->pcie_regs->phy_idx)) {
+        printf("pcie: Error applying %s for %s\n", "apcie-phy-tunables", path);
+        return -1;
+    }
+
+    if (state->pcie_regs->type == APCIE_T602X || state->pcie_regs->type == APCIE_T6031) {
+        if (poll32(state->phy_common_base + APCIE_PHYCMN_CLK, APCIE_PHYCMN_CLK_100MHZ,
+                   APCIE_PHYCMN_CLK_100MHZ, 250000)) {
+            printf("pcie: Reference clock not available\n");
+            return -1;
+        }
+    }
+
+    for (int phy = 0; phy < state->num_phys; phy++) {
+        set32(state->phy_base[phy] + APCIE_PHY_CTRL, APCIE_PHY_CTRL_CLK0REQ);
+        if (poll32(state->phy_base[phy] + APCIE_PHY_CTRL, APCIE_PHY_CTRL_CLK0ACK,
+                   APCIE_PHY_CTRL_CLK0ACK, 50000)) {
+            printf("pcie: Timeout enabling PHY CLK0\n");
+            return -1;
+        }
+
+        set32(state->phy_base[phy] + APCIE_PHY_CTRL, APCIE_PHY_CTRL_CLK1REQ);
+        if (poll32(state->phy_base[phy] + APCIE_PHY_CTRL, APCIE_PHY_CTRL_CLK1ACK,
+                   APCIE_PHY_CTRL_CLK1ACK, 50000)) {
+            printf("pcie: Timeout enabling PHY CLK1\n");
+            return -1;
+        }
+
+        clear32(state->phy_base[phy] + APCIE_PHY_CTRL, state->pcie_regs->phy_ctrl_reset);
+        udelay(1);
+
+        /* ??? */
+        if (state->pcie_regs->type == APCIE_T81XX) {
+            set32(state->rc_base + APCIE_PHYIF_CTRL, APCIE_PHYIF_CTRL_RUN);
+            udelay(1);
+        } else if (state->pcie_regs->type == APCIE_T602X ||
+                   state->pcie_regs->compat == APCIE_T8122) {
+            set32(state->phy_base[phy] + 4, 0x01);
+        }
+
+        /* Apply "fuses". */
+        for (int i = 0; fuse_bits && fuse_bits[i].width; i++) {
+            u32 fuse;
+            fuse = (read32(state->fuse_base + fuse_bits[i].src_reg) >> fuse_bits[i].src_bit);
+            fuse &= (1 << fuse_bits[i].width) - 1;
+            mask32(state->phy_ip_base[phy] + fuse_bits[i].tgt_reg,
+                   ((1 << fuse_bits[i].width) - 1) << fuse_bits[i].tgt_bit,
+                   fuse << fuse_bits[i].tgt_bit);
+        }
+
+        char pll_prop[64];
+        char auspma_prop[64];
+
+        if (state->num_phys == 1) {
+            strcpy(pll_prop, "apcie-phy-ip-pll-tunables");
+            strcpy(auspma_prop, "apcie-phy-ip-auspma-tunables");
+        } else {
+            snprintf(pll_prop, sizeof(pll_prop), "apcie-phy-%d-ip-pll-tunables", phy);
+            snprintf(auspma_prop, sizeof(auspma_prop), "apcie-phy-%d-ip-auspma-tunables", phy);
+        }
+
+        if (tunables_apply_local_addr(path, pll_prop, state->phy_ip_base[phy])) {
+            printf("pcie: Error applying %s for %s\n", pll_prop, path);
+            return -1;
+        }
+        if (tunables_apply_local_addr(path, auspma_prop, state->phy_ip_base[phy])) {
+            printf("pcie: Error applying %s for %s\n", auspma_prop, path);
+            return -1;
+        }
+
+        if (state->pcie_regs->type == APCIE_T602X || state->pcie_regs->compat == APCIE_T8122) {
+            set32(state->phy_base[phy] + 4, 0x10);
+        }
+    }
+
+    if (state->pcie_regs->type == APCIE_T602X || state->pcie_regs->compat == APCIE_T8122) {
+        mask32(state->phy_common_base + APCIE_PHYCMN_CLK, APCIE_PHYCMN_CLK_MODE,
+               FIELD_PREP(APCIE_PHYCMN_CLK_MODE, 1));
+
+        // Why always PHY 1 in this case?
+        u32 off = state->num_phys > 1 ? PHY_STRIDE : 0;
+        if (poll32(state->phy_base[0] + off + 0x8, 1, 1, 250000)) {
+            printf("pcie: PHY clock enable timed out\n");
+            return -1;
+        }
+        for (int phy = 0; phy < state->num_phys; phy++) {
+            if (state->pcie_regs->type == APCIE_T602X) {
+                set32(state->phy_base[phy] + APCIE_PHY_CTRL, 0x300);
+            } else if (state->pcie_regs->compat == APCIE_T8122) {
+                set32(state->phy_base[phy] + APCIE_PHY_CTRL, 0x200);
+            }
+        }
+        write32(state->rc_base + 0x54, 0x140);
+        write32(state->rc_base + 0x50, 0x1);
+        if (poll32(state->rc_base + 0x58, 1, 1, 250000)) {
+            printf("pcie: Failed to initialize RC thing\n");
+            return -1;
+        }
+        if (state->pcie_regs->type == APCIE_T602X) {
+            if (controller == APCIE)
+                clear32(state->rc_base + 0x3c, 0x1);
+            pmgr_adt_power_disable_index(path, 1);
+        }
+    }
+
+    return 0;
+}
+
 static int pcie_init_controller(int controller, const char *path)
 {
     struct state *state = &controllers[controller];
@@ -429,134 +564,13 @@ static int pcie_init_controller(int controller, const char *path)
         return -1;
     }
 
-    if (!adt_getprop(adt, adt_offset, "apcie-axi2af-tunables", NULL)) {
-        printf("pcie: No axi2af tunables\n");
-    } else if (tunables_apply_local(path, "apcie-axi2af-tunables", state->pcie_regs->axi_idx)) {
-        printf("pcie: Error applying %s for %s\n", "apcie-axi2af-tunables", path);
+    u32 phy_ctrl = read32(state->phy_base[0] + APCIE_PHY_CTRL);
+    bool running = (phy_ctrl & (APCIE_PHY_CTRL_CLK0ACK | APCIE_PHY_CTRL_CLK1ACK)) ==
+                   (APCIE_PHY_CTRL_CLK0ACK | APCIE_PHY_CTRL_CLK1ACK);
+    printf("pcie: PHY_CTRL 0x%x%s\n", phy_ctrl, running ? ", keeping the running controller" : "");
+
+    if (!running && pcie_init_phy(state, controller, path, adt_offset, fuse_bits))
         return -1;
-    }
-
-    /* ??? */
-    if (controller == APCIE)
-        write32(state->rc_base + 0x4, 0);
-
-    if (!adt_getprop(adt, adt_offset, "apcie-common-tunables", NULL)) {
-        printf("pcie: No common tunables\n");
-    } else if (tunables_apply_local(path, "apcie-common-tunables", state->pcie_regs->rc_idx)) {
-        printf("pcie: Error applying %s for %s\n", "apcie-common-tunables", path);
-        return -1;
-    }
-
-    /*
-     * Initialize PHY.
-     */
-
-    if (!adt_getprop(adt, adt_offset, "apcie-phy-tunables", NULL)) {
-        printf("pcie: No PHY tunables\n");
-    } else if (tunables_apply_local(path, "apcie-phy-tunables", state->pcie_regs->phy_idx)) {
-        printf("pcie: Error applying %s for %s\n", "apcie-phy-tunables", path);
-        return -1;
-    }
-
-    if (state->pcie_regs->type == APCIE_T602X || state->pcie_regs->type == APCIE_T6031) {
-        if (poll32(state->phy_common_base + APCIE_PHYCMN_CLK, APCIE_PHYCMN_CLK_100MHZ,
-                   APCIE_PHYCMN_CLK_100MHZ, 250000)) {
-            printf("pcie: Reference clock not available\n");
-            return -1;
-        }
-    }
-
-    for (int phy = 0; phy < state->num_phys; phy++) {
-        set32(state->phy_base[phy] + APCIE_PHY_CTRL, APCIE_PHY_CTRL_CLK0REQ);
-        if (poll32(state->phy_base[phy] + APCIE_PHY_CTRL, APCIE_PHY_CTRL_CLK0ACK,
-                   APCIE_PHY_CTRL_CLK0ACK, 50000)) {
-            printf("pcie: Timeout enabling PHY CLK0\n");
-            return -1;
-        }
-
-        set32(state->phy_base[phy] + APCIE_PHY_CTRL, APCIE_PHY_CTRL_CLK1REQ);
-        if (poll32(state->phy_base[phy] + APCIE_PHY_CTRL, APCIE_PHY_CTRL_CLK1ACK,
-                   APCIE_PHY_CTRL_CLK1ACK, 50000)) {
-            printf("pcie: Timeout enabling PHY CLK1\n");
-            return -1;
-        }
-
-        clear32(state->phy_base[phy] + APCIE_PHY_CTRL, state->pcie_regs->phy_ctrl_reset);
-        udelay(1);
-
-        /* ??? */
-        if (state->pcie_regs->type == APCIE_T81XX) {
-            set32(state->rc_base + APCIE_PHYIF_CTRL, APCIE_PHYIF_CTRL_RUN);
-            udelay(1);
-        } else if (state->pcie_regs->type == APCIE_T602X ||
-                   state->pcie_regs->compat == APCIE_T8122) {
-            set32(state->phy_base[phy] + 4, 0x01);
-        }
-
-        /* Apply "fuses". */
-        for (int i = 0; fuse_bits && fuse_bits[i].width; i++) {
-            u32 fuse;
-            fuse = (read32(state->fuse_base + fuse_bits[i].src_reg) >> fuse_bits[i].src_bit);
-            fuse &= (1 << fuse_bits[i].width) - 1;
-            mask32(state->phy_ip_base[phy] + fuse_bits[i].tgt_reg,
-                   ((1 << fuse_bits[i].width) - 1) << fuse_bits[i].tgt_bit,
-                   fuse << fuse_bits[i].tgt_bit);
-        }
-
-        char pll_prop[64];
-        char auspma_prop[64];
-
-        if (state->num_phys == 1) {
-            strcpy(pll_prop, "apcie-phy-ip-pll-tunables");
-            strcpy(auspma_prop, "apcie-phy-ip-auspma-tunables");
-        } else {
-            snprintf(pll_prop, sizeof(pll_prop), "apcie-phy-%d-ip-pll-tunables", phy);
-            snprintf(auspma_prop, sizeof(auspma_prop), "apcie-phy-%d-ip-auspma-tunables", phy);
-        }
-
-        if (tunables_apply_local_addr(path, pll_prop, state->phy_ip_base[phy])) {
-            printf("pcie: Error applying %s for %s\n", pll_prop, path);
-            return -1;
-        }
-        if (tunables_apply_local_addr(path, auspma_prop, state->phy_ip_base[phy])) {
-            printf("pcie: Error applying %s for %s\n", auspma_prop, path);
-            return -1;
-        }
-
-        if (state->pcie_regs->type == APCIE_T602X || state->pcie_regs->compat == APCIE_T8122) {
-            set32(state->phy_base[phy] + 4, 0x10);
-        }
-    }
-
-    if (state->pcie_regs->type == APCIE_T602X || state->pcie_regs->compat == APCIE_T8122) {
-        mask32(state->phy_common_base + APCIE_PHYCMN_CLK, APCIE_PHYCMN_CLK_MODE,
-               FIELD_PREP(APCIE_PHYCMN_CLK_MODE, 1));
-
-        // Why always PHY 1 in this case?
-        u32 off = state->num_phys > 1 ? PHY_STRIDE : 0;
-        if (poll32(state->phy_base[0] + off + 0x8, 1, 1, 250000)) {
-            printf("pcie: PHY clock enable timed out\n");
-            return -1;
-        }
-        for (int phy = 0; phy < state->num_phys; phy++) {
-            if (state->pcie_regs->type == APCIE_T602X) {
-                set32(state->phy_base[phy] + APCIE_PHY_CTRL, 0x300);
-            } else if (state->pcie_regs->compat == APCIE_T8122) {
-                set32(state->phy_base[phy] + APCIE_PHY_CTRL, 0x200);
-            }
-        }
-        write32(state->rc_base + 0x54, 0x140);
-        write32(state->rc_base + 0x50, 0x1);
-        if (poll32(state->rc_base + 0x58, 1, 1, 250000)) {
-            printf("pcie: Failed to initialize RC thing\n");
-            return -1;
-        }
-        if (state->pcie_regs->type == APCIE_T602X) {
-            if (controller == APCIE)
-                clear32(state->rc_base + 0x3c, 0x1);
-            pmgr_adt_power_disable_index(path, 1);
-        }
-    }
 
     for (u32 port = 0; port < state->port_count; port++) {
         char bridge[64];
@@ -619,6 +633,9 @@ static int pcie_init_controller(int controller, const char *path)
         } else {
             state->port_intr2axi_base[port] = 0;
         }
+
+        if (running)
+            continue;
 
         if (state->pcie_regs->type == APCIE_T602X) {
             set32(state->rc_base + 0x3c, 0x1);
@@ -897,6 +914,8 @@ int pcie_shutdown(void)
             continue;
 
         for (u32 port = 0; port < state->port_count; port++) {
+            if (!state->port_base[port])
+                continue;
             if (state->pcie_regs->type == APCIE_T602X)
                 clear32(state->port_base[port] + APCIE_T602X_PORT_RESET, APCIE_PORT_RESET_DIS);
             else
