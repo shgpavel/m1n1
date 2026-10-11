@@ -24,6 +24,7 @@ void smp_stop_secondaries(bool deep_sleep);
 
 void smp_call4(int cpu, void *func, u64 arg0, u64 arg1, u64 arg2, u64 arg3);
 
+int smp_call4_timeout(int cpu, void *func, u64 arg0, u64 arg1, u64 arg2, u64 arg3, u64 timeout_us);
 u64 smp_wait(int cpu);
 
 bool smp_is_alive(int cpu);

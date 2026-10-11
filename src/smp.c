@@ -516,6 +516,40 @@ void smp_call4(int cpu, void *func, u64 arg0, u64 arg1, u64 arg2, u64 arg3)
         sysop("dmb sy");
 }
 
+int smp_call4_timeout(int cpu, void *func, u64 arg0, u64 arg1, u64 arg2, u64 arg3, u64 timeout_us)
+{
+    if (cpu >= MAX_CPUS || cpu == boot_cpu_idx)
+        return -1;
+
+    struct spin_table *target = &spin_table[cpu];
+
+    u64 flag = target->flag;
+    target->args[0] = arg0;
+    target->args[1] = arg1;
+    target->args[2] = arg2;
+    target->args[3] = arg3;
+    sysop("dmb sy");
+    target->target = (u64)func;
+    sysop("dsb sy");
+
+    if (wfe_mode)
+        sysop("sev");
+    else
+        smp_send_ipi(cpu);
+
+    u64 start = get_ticks();
+    while (target->flag == flag) {
+        if (ticks_to_usecs(get_ticks() - start) > timeout_us) {
+            target->target = 0;
+            sysop("dsb sy");
+            return -1;
+        }
+        sysop("dmb sy");
+    }
+
+    return 0;
+}
+
 u64 smp_wait(int cpu)
 {
     if (cpu >= MAX_CPUS)
