@@ -46,6 +46,7 @@ static void *fdt = NULL;
 static char *chainload_spec = NULL;
 static char *net_spec = NULL;
 static u32 net_wait = 0;
+static bool start_secondaries = true;
 
 static void *load_one_payload(void *start, size_t size);
 
@@ -206,6 +207,8 @@ static bool check_var(u8 **p)
         net_spec = val;
     } else if (IS_VAR("netwait=")) {
         net_wait = atol(val);
+    } else if (IS_VAR("smp=")) {
+        start_secondaries = val[0] != '0';
     } else if (IS_VAR("display=")) {
         display_configure(val);
     } else if (IS_VAR("mitigations=")) {
@@ -332,7 +335,8 @@ int payload_run(void)
 
     if (kernel && fdt) {
         cpufreq_init();
-        smp_start_secondaries();
+        if (start_secondaries)
+            smp_start_secondaries();
         mitigations_perform();
         if (enable_tso) {
 
