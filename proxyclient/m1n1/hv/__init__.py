@@ -1474,10 +1474,14 @@ class HV(Reloadable):
     def map_essential(self):
         # Things we always map/take over, for the hypervisor to work
         _pmgr = {}
+        pmgr_resettable = set()
 
         def wh(base, off, data, width):
             self.log(f"PMGR W {base:x}+{off:x}:{width} = 0x{data:x}: Dangerous write")
-            self.p.mask32(base + off, 0x3ff, (data | 0xf) & ~(0x80000400))
+            if base + off in pmgr_resettable:
+                self.p.mask32(base + off, 0x800007ff, data | 0xf)
+            else:
+                self.p.mask32(base + off, 0x3ff, (data | 0xf) & ~(0x80000400))
             _pmgr[base + off] = (data & 0xfffffc0f) | ((data & 0xf) << 4)
 
         def rh(base, off, width):
@@ -1513,6 +1517,9 @@ class HV(Reloadable):
                 if re.fullmatch(r"apcie\d*", node.name):
                     for idx in node.clock_gates:
                         hook_pmgr_dev(dev_by_id[idx])
+            # Keep the ANS powered for the NIC, but let the guest reset it
+            if "ANS" in dev_by_name:
+                pmgr_resettable.add(self.adt.pmgr_dev_get_addr(dev_by_name["ANS"]))
 
         pmgr0_start = pmgr.get_reg(0)[0]
 
