@@ -1513,6 +1513,20 @@ static int dt_get_or_add_reserved_mem(const char *node_name, const char *compat,
     return node;
 }
 
+static int dt_reserve_m1n1(void)
+{
+    u64 start = ALIGN_DOWN((u64)_base, SZ_16K);
+    u64 end = ALIGN_UP((u64)_end, SZ_16K);
+    char name[32];
+
+    snprintf(name, sizeof(name), "m1n1@%lx", start);
+    if (dt_get_or_add_reserved_mem(name, "asahi,m1n1", true, start, end - start) < 0)
+        return -1;
+
+    printf("FDT: reserved m1n1 at 0x%lx..0x%lx for parked secondaries\n", start, end);
+    return 0;
+}
+
 static int dt_device_add_mem_region(const char *alias, uint32_t phandle, const char *name)
 {
     int ret;
@@ -2921,6 +2935,8 @@ int kboot_prepare_dt(void *fdt)
      * for the usable memory span to make it into the devicetree.
      */
     if (dt_set_memory())
+        bail("FDT: couldn't set memory\n");
+    if (dt_reserve_m1n1())
         return -1;
 
     if (fdt_pack(dt))
