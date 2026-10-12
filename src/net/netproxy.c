@@ -178,6 +178,30 @@ bool netproxy_active(void)
     return netproxy_up;
 }
 
+bool netproxy_wait_host(u32 seconds)
+{
+    if (!netproxy_up)
+        return false;
+
+    printf("netproxy: waiting %u s for a host\n", seconds);
+    disklog_flush();
+
+    u64 timeout = timeout_calculate((u64)seconds * 1000000);
+    while (!timeout_expired(timeout)) {
+        net_poll();
+        if (netstream_connected()) {
+            printf("netproxy: host connected\n");
+            disklog_flush();
+            return true;
+        }
+        udelay(100);
+    }
+
+    printf("netproxy: no host\n");
+    disklog_flush();
+    return false;
+}
+
 void netproxy_vuart_setup(void)
 {
     if (netproxy_up)

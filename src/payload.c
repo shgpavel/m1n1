@@ -45,6 +45,7 @@ static struct kernel_header *kernel = NULL;
 static void *fdt = NULL;
 static char *chainload_spec = NULL;
 static char *net_spec = NULL;
+static u32 net_wait = 0;
 
 static void *load_one_payload(void *start, size_t size);
 
@@ -203,6 +204,8 @@ static bool check_var(u8 **p)
         chainload_spec = val;
     } else if (IS_VAR("net=")) {
         net_spec = val;
+    } else if (IS_VAR("netwait=")) {
+        net_wait = atol(val);
     } else if (IS_VAR("display=")) {
         display_configure(val);
     } else if (IS_VAR("mitigations=")) {
@@ -316,6 +319,11 @@ int payload_run(void)
     if (net_spec && netproxy_start(net_spec) < 0) {
         printf("Network proxy failed to start, rebooting\n");
         flush_and_reboot();
+    }
+
+    if (net_spec && net_wait && (chainload_spec || kernel) && netproxy_wait_host(net_wait)) {
+        printf("Staying in the proxy instead of booting the payload\n");
+        return -1;
     }
 
     if (chainload_spec) {
