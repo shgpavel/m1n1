@@ -8,11 +8,13 @@
 #include "assert.h"
 #include "chainload.h"
 #include "cpufreq.h"
+#include "disklog.h"
 #include "display.h"
 #include "heapblock.h"
 #include "kboot.h"
 #include "mitigations.h"
 #include "netproxy.h"
+#include "nvme.h"
 #include "smp.h"
 #include "utils.h"
 
@@ -180,6 +182,8 @@ static char *chosen[MAX_CHOSEN_VARS];
 #endif
 
 static bool enable_tso = false;
+static u32 boot_delay = 0;
+static bool ans_cycle = false;
 
 static bool check_var(u8 **p)
 {
@@ -215,6 +219,10 @@ static bool check_var(u8 **p)
         mitigations_configure(val);
     } else if (IS_VAR("tso=")) {
         enable_tso = val[0] == '1';
+    } else if (IS_VAR("bootdelay=")) {
+        boot_delay = atol(val);
+    } else if (IS_VAR("anscycle=")) {
+        ans_cycle = val[0] == '1';
     } else {
         printf("Unknown variable %s\n", *p);
     }
@@ -366,6 +374,20 @@ int payload_run(void)
         if (kboot_prepare_dt(fdt)) {
             printf("Failed to prepare FDT!\n");
             return -1;
+        }
+
+        if (ans_cycle) {
+            netproxy_shutdown();
+            nvme_shutdown();
+            printf("Cycling the ANS before booting the kernel: %d\n", nvme_init());
+            disklog_flush();
+            nvme_shutdown();
+        }
+
+        if (boot_delay) {
+            netproxy_shutdown();
+            printf("Waiting %u s before booting the kernel\n", boot_delay);
+            mdelay(boot_delay * 1000);
         }
 
         return kboot_boot(kernel);
