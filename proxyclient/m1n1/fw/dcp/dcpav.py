@@ -54,19 +54,76 @@ class DCPDPTXRemotePortService(EPICStandardService):
     NAME = "dcpdptx-port-epic"
     SHORT = "port"
 
+    APCALLS = [
+        "Activate", "Deactivate", "GetMaxDriveSettings", "SetDriveSettings", "GetDriveSettings",
+        "WillChangeLinkConfig", "DidChangeLinkConfig", "GetMaxLinkRate", "GetLinkRate", "SetLinkRate",
+        "GetMaxLaneCount", "GetActiveLaneCount", "SetActiveLaneCount", "GetSupportsDownspread",
+        "GetDownspread", "SetDownspread", "GetSupportsLaneMapping", "SetLaneMap", "GetSupportsHPD",
+        "ForceHotPlugDetect", "InactiveSinkDetected", "SetDisplayHints", "DeviceNotResponding",
+        "DeviceBusyTimeout", "DeviceNotStarted", "SetResourceAvailable", "GetVirtualDeviceMode",
+    ]
+
+    phy = None
+    max_link_rate = 0x1e
+    max_lane_count = 4
+
     def displayRequest(self):
-        self.call(8, 8, bytes(16))
+        self.call(0, 6, bytes(16))
 
     def displayRelease(self):
-        self.call(8, 9, bytes(16))
+        self.call(0, 7, bytes(16))
 
-    def connectTo(self, connected, unit, port, unk=0):
-        target = 0
+    def connectTo(self, connected, dfp, port=DPPHY, die=0, attrs=0):
+        target = port | (dfp << 4) | (die << 8)
         if connected:
-            target |= (1 << 8)
-        target |= unit
-        target |= port << 4
-        self.call(8, 13, struct.pack("<16xII8x", unk, target))
+            target |= 0x8000
+        resp = self.call(0, 11, struct.pack("<II24x", attrs, target))
+        ret = struct.unpack_from("<I", resp, 16)[0]
+        if ret:
+            raise EPICError(f"connectTo {target:#x} failed: {ret:#x}")
+
+    def hotPlugDetect(self, asserted):
+        self.call(8, 8, struct.pack("<16xQ8x", int(asserted)))
+
+    def apcall(self, group, cmd, data):
+        name = self.APCALLS[cmd] if cmd < len(self.APCALLS) else f"#{cmd}"
+        reply = bytearray(data)
+        reply[0:4] = bytes(4)
+        handler = getattr(self, "ap_" + name, None)
+        if handler is not None:
+            handler(data, reply)
+        self.log(f"AP call {name}: {data.hex()} -> {reply.hex()}")
+        return bytes(reply)
+
+    def ap_Activate(self, data, reply):
+        if self.phy:
+            self.phy.activate()
+
+    def ap_GetMaxDriveSettings(self, data, reply):
+        reply[16:24] = struct.pack("<II", 3, 3)
+
+    def ap_GetMaxLinkRate(self, data, reply):
+        reply[16:24] = struct.pack("<Q", self.max_link_rate)
+
+    def ap_GetLinkRate(self, data, reply):
+        reply[16:24] = struct.pack("<Q", self.phy.rate if self.phy else 0)
+
+    def ap_SetLinkRate(self, data, reply):
+        if self.phy:
+            self.phy.set_link_rate(data[16])
+
+    def ap_GetMaxLaneCount(self, data, reply):
+        reply[16:24] = struct.pack("<Q", self.max_lane_count)
+
+    def ap_GetActiveLaneCount(self, data, reply):
+        reply[16:24] = struct.pack("<Q", self.phy.lanes if self.phy else 0)
+
+    def ap_SetActiveLaneCount(self, data, reply):
+        if self.phy:
+            self.phy.set_active_lane_count(struct.unpack_from("<I", data, 16)[0])
+
+    def ap_GetSupportsHPD(self, data, reply):
+        reply[16:24] = struct.pack("<Q", 1)
 
 class DCPDPTXPortEndpoint(EPICEndpoint):
     SHORT = "dpport"

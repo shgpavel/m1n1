@@ -65,6 +65,53 @@ EPICSubHeaderV2 = Struct(
     "inline_len" / Hex(Int32ul),
 )
 
+# AFKEP v2 framing (macOS 27 firmware): ring entry payload = V2Header + V2MsgHeader + body
+EPICV2Header = Struct(
+    "seq" / Default(Int8ul, 0),
+    "pad" / Default(Int8ul, 0),
+    "iid" / Int16ul,
+    "length" / Int32ul,
+)
+
+EPICV2Kind = "EPICV2Kind" / Enum(Int8ul,
+    REPORT = 0,
+    COMMAND = 1,
+    RESPONSE = 2,
+)
+
+EPICV2_REPORT_PUBLISH = 0x11
+EPICV2_REPORT_OPEN = 0x12
+EPICV2_REPORT_CLOSE = 0x13
+EPICV2_REPORT_TERMINATE = 0x14
+
+EPICV2MsgHeader = Struct(
+    "tag" / Default(Hex(Int64ul), 0),
+    "type" / Hex(Int8ul),
+    "kind" / EPICV2Kind,
+    "flags" / Default(Int8ul, 0),
+    "pad" / Default(Bytes(5), bytes(5)),
+)
+
+EPICV2CmdHeader = Struct(
+    "flags" / Default(Int8ul, 1),
+    "seq" / Int8ul,
+    "pad" / Default(Int16ul, 0),
+    "value" / Hex(Int32ul),
+)
+
+EPICV2OOB = Struct(
+    "rsp_addr" / Hex(Int64ul),
+    "cmd_addr" / Hex(Int64ul),
+    "rsp_len" / Hex(Int32ul),
+    "cmd_len" / Hex(Int32ul),
+)
+
+EPICV2_INTERNAL_PAUSE = 2
+EPICV2_INTERNAL_PAUSE_DONE = 3
+EPICV2_INTERNAL_RESUME = 4
+EPICV2_INTERNAL_RESUME_DONE = 5
+EPICV2_SPLIT = 0x404
+
 # dcp's announce
 EPICAnnounce = Struct(
     "name" / Padded(32, CString("utf8")),
@@ -227,6 +274,8 @@ class EPICService:
     def send_cmd(self, type, data, retlen=None):
         if retlen is None:
             retlen = len(data)
+        if self.ep.v2:
+            return self.send_cmd_v2(type, data, retlen)
         cmd = Container()
         cmd.rxbuf = self.rxbuf_dva
         cmd.txbuf = self.txbuf_dva
@@ -240,6 +289,67 @@ class EPICService:
         while self.reply is None:
             self.ep.asc.work()
         return self.reply
+
+    # The firmware asserts (AFKEPCommandContext.cpp:204) when it has a response buffer
+    # but the service replies with nothing, so responses come back inline by default.
+    OOB_RSP = False
+
+    def send_cmd_v2(self, type, data, retlen):
+        self.iface.writemem(self.txbuf, data)
+        seq = self.seq & 0xff
+        rsp_len = retlen if self.OOB_RSP else 0
+        hdr = EPICV2CmdHeader.build(Container(seq=seq, value=retlen))
+        oob = EPICV2OOB.build(Container(rsp_addr=self.rxbuf_dva if rsp_len else 0,
+                                        cmd_addr=self.txbuf_dva if data else 0,
+                                        rsp_len=rsp_len, cmd_len=len(data)))
+        self.reply = None
+        self.pending_seq = seq
+        self.ep.send_epic_v2(self.chan, EPICV2Kind.COMMAND, type, hdr + oob, tag=self.seq)
+        self.seq += 1
+        while self.reply is None:
+            self.ep.asc.work()
+        return self.reply
+
+    def handle_reply_v2(self, mh, fd):
+        rh = EPICV2CmdHeader.parse_stream(fd)
+        if rh.seq != getattr(self, "pending_seq", None):
+            self.log(f"Response for unknown seq {rh.seq} (tag {mh.tag:#x})")
+            return
+        if rh.value != 0:
+            raise EPICError(f"IOP returned errcode {rh.value:#x}")
+        if rh.flags & 1:
+            oob = EPICV2OOB.parse_stream(fd)
+            if oob.rsp_len:
+                assert oob.rsp_addr == self.rxbuf_dva
+                self.reply = self.iface.readmem(self.rxbuf, oob.rsp_len)
+                return
+        self.reply = fd.read()
+
+    def handle_cmd_v2(self, mh, fd):
+        ch = EPICV2CmdHeader.parse_stream(fd)
+        oob = EPICV2OOB.parse_stream(fd) if ch.flags & 1 else None
+        if oob is not None and oob.cmd_len:
+            payload = self.ep.asc.ioread(oob.cmd_addr, oob.cmd_len)
+        else:
+            payload = fd.read()
+        reply = self.handle_ap_cmd(mh.type, payload)
+        rsp = EPICV2CmdHeader.build(Container(flags=ch.flags, seq=ch.seq, value=0))
+        if oob is not None and oob.rsp_addr and oob.rsp_len:
+            reply = reply[:oob.rsp_len]
+            self.ep.asc.iowrite(oob.rsp_addr, reply)
+            oob.rsp_len = len(reply)
+            rsp += EPICV2OOB.build(oob)
+        elif oob is not None:
+            oob.rsp_len = 0
+            rsp += EPICV2OOB.build(oob) + reply
+        else:
+            rsp += reply
+        self.ep.send_epic_v2(self.chan, EPICV2Kind.RESPONSE, mh.type, rsp, tag=mh.tag)
+
+    def handle_ap_cmd(self, type, payload):
+        self.log(f"Unhandled command {type:#x}")
+        chexdump(payload)
+        return b""
 
     def send_notify(self, type, data, **kwargs):
         self.reply = None
@@ -263,6 +373,19 @@ class EPICStandardService(EPICService):
         assert rgroup == group
         assert rcmd == cmd
         return resp[64:64+rlen]
+
+    def handle_ap_cmd(self, type, payload):
+        if type != 0xc0 or len(payload) < 64:
+            return super().handle_ap_cmd(type, payload)
+        group, cmd, length, magic = struct.unpack("<2xHIII", payload[:16])
+        if magic != 0x69706378:
+            return super().handle_ap_cmd(type, payload)
+        return payload[:64] + self.apcall(group, cmd, payload[64:64 + length])
+
+    def apcall(self, group, cmd, data):
+        self.log(f"Unhandled call {group}/{cmd}")
+        chexdump(data)
+        return bytes(4) + data[4:]
 
     def getLocation(self, unk=0):
         return struct.unpack("<16xI12x", self.call(4, 4, bytes(32)))
@@ -300,11 +423,23 @@ class EPICEndpoint(AFKRingBufEndpoint):
         self.chan_map = {}
         self.serv_names = {}
         self.hseq = 0
+        self.v2 = getattr(self.asc, "epic_v2", None)
+        self.v2_frag = {}
 
         for i in self.SERVICES:
             self.serv_names[i.NAME] = i
 
+    @staticmethod
+    def is_v2(data):
+        return (len(data) >= 32 and data[:8] == bytes(8) and
+                struct.unpack_from("<I", data, 12)[0] == len(data) - 16)
+
     def handle_ipc(self, data):
+        if self.v2 is None:
+            self.v2 = self.is_v2(data)
+            self.log(f"EPIC framing: {'v2' if self.v2 else 'v1'}")
+        if self.v2:
+            return self.handle_ipc_v2(data[8:])
         fd = BytesIO(data)
         hdr = EPICHeader.parse_stream(fd)
         sub = EPICSubHeader.parse_stream(fd)
@@ -321,6 +456,77 @@ class EPICEndpoint(AFKRingBufEndpoint):
             self.handle_reply(hdr, sub, fd)
         elif sub.category == EPICCategory.COMMAND:
             self.handle_cmd(hdr, sub, fd)
+
+    def handle_ipc_v2(self, pkt):
+        hdr = EPICV2Header.parse(pkt[:8])
+        body = pkt[8:]
+        if len(body) != hdr.length:
+            buf = self.v2_frag.get(hdr.iid, b"") + body
+            if len(buf) < hdr.length:
+                self.v2_frag[hdr.iid] = buf
+                return
+            self.v2_frag.pop(hdr.iid, None)
+            body = buf
+        if hdr.iid == 0:
+            code = struct.unpack("<I", body[:4])[0]
+            self.log(f"Internal packet {code}")
+            if code == EPICV2_INTERNAL_RESUME:
+                self.send_internal_v2(EPICV2_INTERNAL_RESUME_DONE)
+            elif code == EPICV2_INTERNAL_PAUSE:
+                self.send_internal_v2(EPICV2_INTERNAL_PAUSE_DONE)
+            return
+        fd = BytesIO(body)
+        mh = EPICV2MsgHeader.parse_stream(fd)
+        if self.verbose > 2:
+            self.log(f"IID {hdr.iid} Seq {hdr.seq} Len {hdr.length} Kind {mh.kind} Type {mh.type:#x} Tag {mh.tag:#x} Flags {mh.flags}")
+        if mh.kind == EPICV2Kind.REPORT:
+            self.handle_report_v2(hdr, mh, fd)
+        elif mh.kind == EPICV2Kind.COMMAND:
+            self.chan_map[hdr.iid].handle_cmd_v2(mh, fd)
+        elif mh.kind == EPICV2Kind.RESPONSE:
+            self.chan_map[hdr.iid].handle_reply_v2(mh, fd)
+
+    def handle_report_v2(self, hdr, mh, fd):
+        if mh.type == EPICV2_REPORT_PUBLISH:
+            init = EPICAnnounce.parse_stream(fd)
+            if init.props is None:
+                init.props = {}
+            name = init.name
+            if "EPICName" in init.props:
+                name = init.props["EPICName"]
+            key = name + str(init.props.get("EPICUnit", ""))
+            if name in self.serv_names:
+                srv = self.serv_names[name](self)
+                short = srv.SHORT + str(init.props.get("EPICUnit", ""))
+                setattr(self, short, srv)
+                srv.init(init.props)
+                srv.chan = hdr.iid
+                self.chan_map[hdr.iid] = srv
+                self.serv_map[key] = srv
+                self.log(f"New service: {key} on interface {hdr.iid} (short name: {short})")
+                self.send_epic_v2(hdr.iid, EPICV2Kind.REPORT, EPICV2_REPORT_OPEN, b"", flags=1)
+            else:
+                self.log(f"Unknown service {key} on interface {hdr.iid}")
+        elif mh.type == EPICV2_REPORT_TERMINATE:
+            srv = self.chan_map.pop(hdr.iid, None)
+            self.log(f"Interface {hdr.iid} terminated ({srv})")
+        elif hdr.iid not in self.chan_map:
+            self.log(f"Ignoring report {mh.type:#x} on interface {hdr.iid}")
+        else:
+            self.chan_map[hdr.iid].handle_report(EPICCategory.REPORT, mh.type, mh.tag, fd)
+
+    def send_epic_v2(self, iid, kind, type, data, tag=0, flags=0):
+        mh = EPICV2MsgHeader.build(Container(tag=tag, type=type, kind=kind, flags=flags))
+        self.send_packet_v2(iid, mh + data)
+
+    def send_internal_v2(self, code):
+        self.send_packet_v2(0, struct.pack("<I", code))
+
+    def send_packet_v2(self, iid, body):
+        assert len(body) <= EPICV2_SPLIT
+        hdr = EPICV2Header.build(Container(seq=self.hseq & 0xff, iid=iid, length=len(body)))
+        self.hseq += 1
+        self.send_ipc(bytes(8) + hdr + body)
 
     def wait_for(self, name):
         while True:
