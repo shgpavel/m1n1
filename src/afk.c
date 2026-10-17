@@ -661,7 +661,14 @@ static int afk_epic_v2_report(afk_epic_ep_t *epic, u16 iid, struct epic_v2_msg_h
                 printf("AFK[ep:%02x]: short publish on interface %d\n", epic->ep, iid);
                 return -1;
             }
-            if (afk_epic_add_service(epic, iid, data, size - offsetof(struct epic_announce, props)))
+            service = NULL;
+            for (u32 i = 0; i < epic->num_channels; i++)
+                if (!epic->services[i].enabled && epic->services[i].channel == iid)
+                    service = &epic->services[i];
+            if (service)
+                service->enabled = true;
+            else if (afk_epic_add_service(epic, iid, data,
+                                          size - offsetof(struct epic_announce, props)))
                 return 0;
             ret = afk_epic_v2_send(epic, iid, KIND_REPORT, REPORT_OPEN, 0, 1, NULL, 0);
             if (ret < 0) {

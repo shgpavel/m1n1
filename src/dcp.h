@@ -44,6 +44,7 @@ typedef struct dcp_dev {
     u64 hpd_gpio;
     bool hpd_active_high;
     bool hpd_forwarded;
+    bool no_reset;
 } dcp_dev_t;
 
 int dcp_connect_dptx(dcp_dev_t *dcp);

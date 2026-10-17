@@ -575,7 +575,8 @@ int display_configure(const char *config)
 
         // Swap!
         u32 stride = tbest.width * 4;
-        ret = display_swap(tmp_dva, stride, tbest.width, tbest.height);
+        ret = display_swap(tmp_dva | dart_dva_base(dcp->dart_dcp), stride, tbest.width,
+                           tbest.height);
         if (ret < 0)
             return ret;
 

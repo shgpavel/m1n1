@@ -231,6 +231,7 @@ dcp_dev_t *dcp_init(const display_config_t *cfg)
     dcp_dev_t *dcp = calloc(1, sizeof(dcp_dev_t));
     if (!dcp)
         return NULL;
+    dcp->no_reset = cfg->no_reset;
 
     dcp->dart_dcp = dart_init_adt(cfg->dcp_dart, 0, sid, true);
     if (!dcp->dart_dcp) {
@@ -318,7 +319,7 @@ int dcp_shutdown(dcp_dev_t *dcp, bool sleep)
     dcp_dpav_shutdown(dcp->dpav_ep);
     free(dcp->phy);
     afk_epic_shutdown(dcp->afk);
-    if (sleep) {
+    if (sleep && !dcp->no_reset) {
         rtkit_sleep(dcp->rtkit);
         pmgr_reset(dcp_die, dcp_pmgr_dev);
     } else {
