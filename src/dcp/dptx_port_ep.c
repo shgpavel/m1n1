@@ -10,6 +10,7 @@
 
 #include "../afk.h"
 #include "../dcp.h"
+#include "../firmware.h"
 #include "../types.h"
 #include "../utils.h"
 
@@ -23,16 +24,24 @@ struct dcpdptx_connection_cmd {
     u32 target;
 } __attribute__((packed));
 
+struct dcpdptx_connection_resp {
+    u32 unk;
+    u32 target;
+    u8 _pad0[8];
+    u32 status;
+} __attribute__((packed));
+
 struct dcpdptx_hotplug_cmd {
     u8 _pad0[16];
-    u32 unk;
+    u64 asserted;
+    u8 _pad1[8];
 } __attribute__((packed));
 
 struct dptxport_apcall_link_rate {
     u32 retcode;
     u8 _unk0[12];
-    u32 link_rate;
-    u8 _unk1[12];
+    u64 link_rate;
+    u8 _unk1[8];
 } __attribute__((packed));
 
 struct dptxport_apcall_lane_count {
@@ -52,8 +61,23 @@ struct dptxport_apcall_set_active_lane_count {
 struct dptxport_apcall_get_support {
     u32 retcode;
     u8 _unk0[12];
-    u32 supported;
+    u64 supported;
+    u8 _unk1[8];
+} __attribute__((packed));
+
+struct dptxport_apcall_get_supports_downspread {
+    u8 _unk0[16];
+    u32 retcode;
     u8 _unk1[12];
+    u8 supported;
+    u8 _unk2[15];
+} __attribute__((packed));
+
+struct dptxport_apcall_virtual_device_mode {
+    u32 retcode;
+    u8 _unk0[12];
+    u64 mode;
+    u8 _unk1[8];
 } __attribute__((packed));
 
 struct dptxport_apcall_max_drive_settings {
@@ -83,6 +107,7 @@ typedef struct dptx_port {
     afk_epic_service_t *service;
     dptx_phy_t *phy;
     u32 link_rate, pending_link_rate;
+    u32 lane_count;
 } dptx_port_t;
 
 typedef struct dcp_dptx_if {
@@ -92,6 +117,11 @@ typedef struct dcp_dptx_if {
 
     struct dptx_port port[2];
 } dcp_dptx_if_t;
+
+static bool dptxport_v27(void)
+{
+    return os_firmware.version >= V27_0;
+}
 
 static int afk_service_call(afk_epic_service_t *service, u16 group, u32 command, const void *data,
                             size_t data_len, size_t data_pad, void *output, size_t output_len,
@@ -164,7 +194,8 @@ int dptxport_validate_connection(afk_epic_service_t *service, u8 core, u8 atc, u
 
 int dptxport_connect(afk_epic_service_t *service, u8 core, u8 atc, u8 die)
 {
-    struct dcpdptx_connection_cmd cmd = {0}, resp = {0};
+    struct dcpdptx_connection_cmd cmd = {0};
+    struct dcpdptx_connection_resp resp = {0};
     int ret;
     u32 target = FIELD_PREP(DCPDPTX_REMOTE_PORT_CORE, core) |
                  FIELD_PREP(DCPDPTX_REMOTE_PORT_DFP, atc) |
@@ -172,14 +203,17 @@ int dptxport_connect(afk_epic_service_t *service, u8 core, u8 atc, u8 die)
 
     cmd.target = target;
     // cmd.unk = 0x100;
-    ret = afk_service_call(service, 0, 11, &cmd, sizeof(cmd), 24, &resp, sizeof(resp), 24);
+    ret = afk_service_call(service, 0, 11, &cmd, sizeof(cmd), 24, &resp, sizeof(resp),
+                           32 - sizeof(resp));
     if (ret)
         return ret;
 
     if (resp.target != target)
         return -1;
-    if (resp.unk != 0x100)
+    if (resp.unk != 0x100 && resp.status != 0) {
+        printf("DPTXPort: connect to 0x%x failed: 0x%x\n", target, resp.status);
         return -1;
+    }
 
     return 0;
 }
@@ -196,20 +230,14 @@ int dptxport_release_display(afk_epic_service_t *service)
 
 int dptxport_set_hpd(afk_epic_service_t *service, bool hpd)
 {
-    struct dcpdptx_hotplug_cmd cmd, resp;
-    int ret;
+    struct dcpdptx_hotplug_cmd cmd;
 
     memset(&cmd, 0, sizeof(cmd));
 
     if (hpd)
-        cmd.unk = 1;
+        cmd.asserted = 1;
 
-    ret = afk_service_call(service, 8, 8, &cmd, sizeof(cmd), 12, &resp, sizeof(resp), 12);
-    if (ret)
-        return ret;
-    if (resp.unk != 1)
-        return -1;
-    return 0;
+    return afk_service_call(service, 8, 8, &cmd, sizeof(cmd), 0, NULL, 0, sizeof(cmd));
 }
 
 static int dptxport_call_get_max_drive_settings(afk_epic_service_t *service, void *reply_,
@@ -273,11 +301,14 @@ static int dptxport_call_set_active_lane_count(afk_epic_service_t *service, cons
         return -1;
 
     u64 lane_count = request->lane_count;
+    if (dptxport_v27())
+        lane_count = (u32)lane_count;
 
     switch (lane_count) {
         case 0 ... 2:
         case 4:
             ret = dptx_phy_set_active_lane_count(port->phy, lane_count);
+            port->lane_count = lane_count;
             break;
         default:
             printf("DPTX-PORT: set_active_lane_count: invalid lane count:%lu\n", lane_count);
@@ -306,6 +337,21 @@ static int dptxport_call_get_link_rate(afk_epic_service_t *service, void *reply_
     return 0;
 }
 
+static int dptxport_call_get_active_lane_count(afk_epic_service_t *service, void *reply_,
+                                               size_t reply_size)
+{
+    struct dptx_port *port = service->cookie;
+    struct dptxport_apcall_lane_count *reply = reply_;
+
+    if (reply_size < sizeof(*reply))
+        return -1;
+
+    reply->retcode = 0;
+    reply->lane_count = port->lane_count;
+
+    return 0;
+}
+
 static int dptxport_call_will_change_link_config(afk_epic_service_t *service)
 {
     UNUSED(service);
@@ -318,7 +364,8 @@ static int dptxport_call_did_change_link_config(afk_epic_service_t *service)
     // struct dptx_port *dptx = service->intf;
     // int ret = 0;
 
-    mdelay(100);
+    if (!dptxport_v27())
+        mdelay(100);
     // dispext0,0 -> atcph1,dpphy
     // mux_control_select(dptx->mux, 0);
 
@@ -339,7 +386,10 @@ static int dptxport_call_set_link_rate(afk_epic_service_t *service, const void *
     if (data_size < sizeof(*request))
         return -1;
 
-    link_rate = request->link_rate;
+    if (dptxport_v27())
+        link_rate = (u8)request->link_rate;
+    else
+        link_rate = (u32)request->link_rate;
 
     switch (link_rate) {
         case LINK_RATE_RBR:
@@ -385,14 +435,14 @@ static int dptxport_call_set_link_rate(afk_epic_service_t *service, const void *
 static int dptxport_call_get_supports_hpd(afk_epic_service_t *service, void *reply_,
                                           size_t reply_size)
 {
-    UNUSED(service);
+    dcp_dptx_if_t *dptx = (dcp_dptx_if_t *)service->intf;
     struct dptxport_apcall_get_support *reply = reply_;
 
     if (reply_size < sizeof(*reply))
         return -1;
 
     reply->retcode = 0;
-    reply->supported = 0;
+    reply->supported = dptx->dcp->hpd_gpio ? 1 : 0;
     return 0;
 }
 
@@ -400,6 +450,18 @@ static int dptxport_call_get_supports_downspread(afk_epic_service_t *service, vo
                                                  size_t reply_size)
 {
     UNUSED(service);
+
+    if (dptxport_v27()) {
+        struct dptxport_apcall_get_supports_downspread *reply = reply_;
+
+        if (reply_size < sizeof(*reply))
+            return -1;
+
+        reply->retcode = 0;
+        reply->supported = 0;
+        return 0;
+    }
+
     struct dptxport_apcall_get_support *reply = reply_;
 
     if (reply_size < sizeof(*reply))
@@ -419,7 +481,29 @@ static int dptxport_call_set_tiled_display_hint(afk_epic_service_t *service, voi
     if (reply_size < sizeof(*reply))
         return -1;
 
-    reply->retcode = 1;
+    reply->retcode = dptxport_v27() ? 0 : 1;
+    return 0;
+}
+
+static int dptxport_call_get_virtual_device_mode(afk_epic_service_t *service, void *reply_,
+                                                 size_t reply_size)
+{
+    UNUSED(service);
+    struct dptxport_apcall_virtual_device_mode *reply = reply_;
+
+    if (reply_size < sizeof(*reply))
+        return -1;
+
+    reply->retcode = 0;
+    reply->mode = 0;
+    return 0;
+}
+
+static int dptxport_call_ack(const void *data, size_t data_size, void *reply, size_t reply_size)
+{
+    memcpy(reply, data, min(reply_size, data_size));
+    if (reply_size > 4)
+        memset(reply, 0, 4);
     return 0;
 }
 
@@ -441,6 +525,10 @@ static int dptxport_call(afk_epic_service_t *service, u32 idx, const void *data,
             return dptxport_call_set_link_rate(service, data, data_size, reply, reply_size);
         case DPTX_APCALL_GET_MAX_LANE_COUNT:
             return dptxport_call_get_max_lane_count(service, reply, reply_size);
+        case DPTX_APCALL_GET_ACTIVE_LANE_COUNT:
+            if (dptxport_v27())
+                return dptxport_call_get_active_lane_count(service, reply, reply_size);
+            return dptxport_call_ack(data, data_size, reply, reply_size);
         case DPTX_APCALL_SET_ACTIVE_LANE_COUNT:
             return dptxport_call_set_active_lane_count(service, data, data_size, reply, reply_size);
         case DPTX_APCALL_GET_SUPPORTS_HPD:
@@ -452,12 +540,11 @@ static int dptxport_call(afk_epic_service_t *service, u32 idx, const void *data,
         case DPTX_APCALL_SET_TILED_DISPLAY_HINTS:
             memcpy(reply, data, min(reply_size, data_size));
             return dptxport_call_set_tiled_display_hint(service, reply, reply_size);
+        case DPTX_APCALL_GET_VIRTUAL_DEVICE_MODE:
+            return dptxport_call_get_virtual_device_mode(service, reply, reply_size);
         case DPTX_APCALL_ACTIVATE:
             dptx_phy_activate(dptx->phy);
-            memcpy(reply, data, min(reply_size, data_size));
-            if (reply_size > 4)
-                memset(reply, 0, 4);
-            return 0;
+            return dptxport_call_ack(data, data_size, reply, reply_size);
         default:
             /* just try to ACK and hope for the best... */
             dprintf("DPTXPort: unhandled call %d\n", idx);
@@ -466,10 +553,8 @@ static int dptxport_call(afk_epic_service_t *service, u32 idx, const void *data,
         case DPTX_APCALL_DEACTIVATE:
         case DPTX_APCALL_SET_DRIVE_SETTINGS:
         case DPTX_APCALL_GET_DRIVE_SETTINGS:
-            memcpy(reply, data, min(reply_size, data_size));
-            if (reply_size > 4)
-                memset(reply, 0, 4);
-            return 0;
+        case DPTX_APCALL_SET_RESOURCE_AVAILABLE:
+            return dptxport_call_ack(data, data_size, reply, reply_size);
     }
 }
 
@@ -521,8 +606,10 @@ int dcp_dptx_connect(dcp_dptx_if_t *dptx, dptx_phy_t *phy, u32 die, u32 port)
 
     dptx->port[port].phy = dptx->phy = phy;
 
-    dptxport_connect(dptx->port[port].service, 0, dptx_phy_dcp_output(phy), die);
-    dptxport_request_display(dptx->port[port].service);
+    if (dptxport_connect(dptx->port[port].service, 0, dptx_phy_dcp_output(phy), die))
+        printf("DPTXPort: connect failed\n");
+    if (dptxport_request_display(dptx->port[port].service))
+        printf("DPTXPort: display request failed\n");
 
     return 0;
 }

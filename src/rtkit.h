@@ -29,6 +29,8 @@ bool rtkit_sleep(rtkit_dev_t *rtk);
 void rtkit_free(rtkit_dev_t *rtk);
 
 bool rtkit_start_ep(rtkit_dev_t *rtk, u8 ep);
+void rtkit_set_dva_base(rtkit_dev_t *rtk, u64 dva_base);
+void rtkit_set_no_ap_power_ack(rtkit_dev_t *rtk, bool no_ack);
 bool rtkit_boot(rtkit_dev_t *rtk);
 
 bool rtkit_can_recv(rtkit_dev_t *rtk);
@@ -38,6 +40,7 @@ bool rtkit_send(rtkit_dev_t *rtk, const struct rtkit_message *msg);
 
 bool rtkit_map(rtkit_dev_t *rtk, void *phys, size_t sz, u64 *dva);
 bool rtkit_unmap(rtkit_dev_t *rtk, u64 dva, size_t sz);
+void *rtkit_translate(rtkit_dev_t *rtk, u64 dva);
 
 bool rtkit_alloc_buffer(rtkit_dev_t *rtk, struct rtkit_buffer *bfr, size_t sz);
 bool rtkit_free_buffer(rtkit_dev_t *rtk, struct rtkit_buffer *bfr);

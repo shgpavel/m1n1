@@ -66,6 +66,7 @@ static const display_config_t display_config_m2 = {
     .dp2hdmi_gpio = "/arm-io/dp2hdmi-gpio",
     .dptx_phy = "/arm-io/dptx-phy",
     .num_dptxports = 2,
+    .fw_version = V13_5,
 };
 
 static const display_config_t display_config_m2_pro_max = {
@@ -88,6 +89,7 @@ static const display_config_t display_config_m2_pro_max = {
 #endif
     .dp2hdmi_gpio = "/arm-io/dp2hdmi-gpio0",
     .dptx_phy = "/arm-io/lpdptx-phy0",
+    .fw_version = V13_5,
 };
 
 static const display_config_t display_config_m2_ultra = {
@@ -101,9 +103,27 @@ static const display_config_t display_config_m2_ultra = {
     .dcp_index = 1,
     .num_dptxports = 2,
     .die = 1,
+    .fw_version = V13_5,
+};
+
+static const display_config_t display_config_j773g = {
+    .dcp = "/arm-io/dcp",
+    .dcp_dart = "/arm-io/dart-dcp",
+    .disp_dart = "/arm-io/dart-disp0",
+    .dp2hdmi_gpio = "/arm-io/dp2hdmi-gpio0",
+    .dptx_phy = "/arm-io/dptx-phy",
+    .pmgr_dev = "DISP_CPU",
+    .dcp_alias = "dcp",
+    .dcp_index = 0,
+    .num_dptxports = 2,
+    .die = 0,
+    .fw_version = V27_0,
+    .no_reset = true,
 };
 
 #define abs(x) ((x) >= 0 ? (x) : -(x))
+
+#define DART_DVA_MASK ((1UL << 36) - 1)
 
 u64 display_mode_fb_size(dcp_timing_mode_t *mode)
 {
@@ -190,11 +210,12 @@ int display_get_vram(u64 *paddr, u64 *size)
 static uintptr_t display_map_fb(uintptr_t iova, u64 paddr, u64 size)
 {
     if (iova == 0) {
+        u64 vm_base = dart_vm_base(dcp->dart_dcp);
         u64 iova_disp0 = 0;
         u64 iova_dcp = 0;
 
         // start scanning for free iova space on vm-base
-        iova_dcp = dart_find_iova(dcp->dart_dcp, dart_vm_base(dcp->dart_dcp) + SZ_16K, size);
+        iova_dcp = dart_find_iova(dcp->dart_dcp, (vm_base & DART_DVA_MASK) + SZ_16K, size);
         if (DART_IS_ERR(iova_dcp)) {
             printf("display: failed to find IOVA for fb of %06zx bytes (dcp)\n", size);
             return iova_dcp;
@@ -224,7 +245,7 @@ static uintptr_t display_map_fb(uintptr_t iova, u64 paddr, u64 size)
             return DART_PTR_ERR;
         }
 
-        iova = iova_dcp;
+        iova = iova_dcp | dart_dva_base(dcp->dart_dcp);
     }
 
     int ret = dart_map(dcp->dart_disp, iova, (void *)paddr, size);
@@ -253,6 +274,8 @@ const display_config_t *display_get_config(void)
         conf = &display_config_m2_pro_max;
     else if (adt_is_compatible(adt, 0, "J180dAP") || adt_is_compatible(adt, 0, "J475dAP"))
         conf = &display_config_m2_ultra;
+    else if (adt_is_compatible(adt, 0, "J773gAP"))
+        conf = &display_config_j773g;
     else
         conf = &display_config_m1;
 
@@ -295,12 +318,24 @@ int display_start_dcp(void)
         // use a safe fb_size
         fb_size = cur_boot_args.video.stride * cur_boot_args.video.height *
                   ((cur_boot_args.video.depth + 7) / 8);
+        pa = cur_boot_args.video.base;
+        size = fb_size = ALIGN_UP(fb_size, SZ_16K);
     } else {
         fb_size = size;
     }
 
     // Find the framebuffer DVA
     fb_dva = dart_search(dcp->dart_disp, (void *)cur_boot_args.video.base);
+    if (!DART_IS_ERR(fb_dva) && fb_dva) {
+        fb_dva |= dart_dva_base(dcp->dart_dcp);
+        if (display_is_dptx && os_firmware.version >= V27_0 &&
+            !dart_translate_silent(dcp->dart_dcp, fb_dva) &&
+            dart_map(dcp->dart_dcp, fb_dva, (void *)pa, size) < 0) {
+            u64 dva = display_map_fb(0, pa, size);
+            if (!DART_IS_ERR(dva))
+                fb_dva = dva;
+        }
+    }
     // framebuffer is not mapped on the M1 Ultra Mac Studio
     if (DART_IS_ERR(fb_dva) || !fb_dva)
         fb_dva = display_map_fb(0, pa, size);
@@ -402,7 +437,9 @@ int display_configure(const char *config)
     return 0;
 #endif
 
-    if (os_firmware.version >= V15_0B1) {
+    const display_config_t *disp_cfg = display_get_config();
+    if (os_firmware.version >= V15_0B1 &&
+        !(disp_cfg && disp_cfg->dptx_phy[0] && os_firmware.version == disp_cfg->fw_version)) {
         printf("display: Unsupported firmware version %s, skipping configuration\n",
                os_firmware.string);
         return 0;
@@ -418,6 +455,8 @@ int display_configure(const char *config)
 
     // connect dptx if necessary
     if (display_is_dptx) {
+        if (os_firmware.version >= V27_0 && dcp_ib_set_power(iboot, true) < 0)
+            printf("display: failed to set power on (continuing anyway)\n");
         ret = dcp_connect_dptx(dcp);
         if (ret < 0)
             return ret;
@@ -444,13 +483,22 @@ int display_configure(const char *config)
      */
     while (retries++ < (DISPLAY_STATUS_RETRIES(display_is_dptx))) {
         dcp_work(dcp);
+        if (display_is_dptx && hpd <= 0 && !(retries % 5))
+            dcp_forward_hpd(dcp);
         hpd = dcp_ib_get_hpd(iboot, &timing_cnt, &color_cnt);
         if (hpd < 0)
             ret = hpd;
         else if (hpd && timing_cnt && color_cnt)
             break;
-        if (retries < DISPLAY_STATUS_RETRIES(display_is_dptx))
-            mdelay(DISPLAY_STATUS_DELAY);
+        if (retries < DISPLAY_STATUS_RETRIES(display_is_dptx)) {
+            if (display_is_dptx) {
+                u64 timeout = timeout_calculate(DISPLAY_STATUS_DELAY * 1000);
+                while (!timeout_expired(timeout))
+                    dcp_work(dcp);
+            } else {
+                mdelay(DISPLAY_STATUS_DELAY);
+            }
+        }
     }
     printf("display: waited %d ms for display status\n", (retries - 1) * DISPLAY_STATUS_DELAY);
     if (ret < 0) {
@@ -537,12 +585,15 @@ int display_configure(const char *config)
         dart_unmap(dcp->dart_disp, fb_dva, fb_size);
         dart_unmap(dcp->dart_dcp, fb_dva, fb_size);
 
-        fb_dva = display_map_fb(fb_dva, fb_pa, size);
-        if (DART_IS_ERR(fb_dva)) {
+        u64 new_dva = display_map_fb(fb_dva, fb_pa, size);
+        if (DART_IS_ERR(new_dva))
+            new_dva = display_map_fb(0, fb_pa, size);
+        if (DART_IS_ERR(new_dva)) {
             printf("display: failed to map new fb\n");
             fb_dva = 0;
             return -1;
         }
+        fb_dva = new_dva;
 
         fb_size = size;
         mmu_map_framebuffer(fb_pa, fb_size);
@@ -684,13 +735,18 @@ void display_shutdown(dcp_shutdown_mode mode)
                 printf("display: Quiescing DCP (unconditional)\n");
                 dcp_shutdown(dcp, false);
                 break;
-            case DCP_SLEEP_IF_EXTERNAL:
+            case DCP_SLEEP_IF_EXTERNAL: {
+                const display_config_t *disp_cfg = display_get_config();
+                bool sleep = display_is_external && !(disp_cfg && disp_cfg->no_reset);
                 if (!display_is_external)
                     printf("display: Quiescing DCP (internal)\n");
+                else if (!sleep)
+                    printf("display: Quiescing DCP (external)\n");
                 else
                     printf("display: Sleeping DCP (external)\n");
-                dcp_shutdown(dcp, display_is_external);
+                dcp_shutdown(dcp, sleep);
                 break;
+            }
             case DCP_SLEEP:
                 printf("display: Sleeping DCP (unconditional)\n");
                 dcp_shutdown(dcp, true);

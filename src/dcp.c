@@ -19,11 +19,42 @@ struct adt_function_smc_gpio {
     u32 phandle;
     char four_cc[4];
     u32 gpio;
-    u32 unk;
+    u32 arg;
 };
 
 static char dcp_pmgr_dev[16] = "DISP0_CPU0";
 static u32 dcp_die;
+
+static int dcp_hdmi_hpd_init(dcp_dev_t *dcp, int node)
+{
+    struct adt_function_smc_gpio hpd;
+    int gpio_path[8];
+    u32 phandle;
+    u64 base;
+
+    if (adt_getprop_copy(adt, node, "function-hdmi_hpd", &hpd, sizeof(hpd)) < 0) {
+        printf("dcp: failed to get hdmi_hpd gpio\n");
+        return -1;
+    }
+
+    int gpio = adt_path_offset_trace(adt, "/arm-io/aop-gpio", gpio_path);
+    if (gpio < 0 || ADT_GETPROP(adt, gpio, "AAPL,phandle", &phandle) < 0 ||
+        phandle != hpd.phandle) {
+        printf("dcp: hdmi_hpd is not an AOP GPIO\n");
+        return -1;
+    }
+
+    if (adt_get_reg(adt, gpio_path, "reg", 0, &base, NULL) < 0) {
+        printf("dcp: failed to get aop-gpio reg\n");
+        return -1;
+    }
+
+    dcp->hpd_gpio = base + 4 * hpd.gpio;
+    dcp->hpd_active_high = !!(hpd.arg & BIT(8));
+    mask32(dcp->hpd_gpio, GENMASK(3, 1), FIELD_PREP(GENMASK(3, 1), 7));
+
+    return 0;
+}
 
 static int dcp_hdmi_dptx_init(dcp_dev_t *dcp, const display_config_t *cfg)
 {
@@ -33,6 +64,7 @@ static int dcp_hdmi_dptx_init(dcp_dev_t *dcp, const display_config_t *cfg)
         return -1;
     }
     struct adt_function_smc_gpio dp2hdmi_pwr, hdmi_pwr;
+    bool v27 = os_firmware.version >= V27_0;
 
     int err =
         adt_getprop_copy(adt, node, "function-dp2hdmi_pwr_en", &dp2hdmi_pwr, sizeof(dp2hdmi_pwr));
@@ -49,11 +81,19 @@ static int dcp_hdmi_dptx_init(dcp_dev_t *dcp, const display_config_t *cfg)
     if (dcp->dp2hdmi_pwr_gpio && dcp->hdmi_pwr_gpio) {
         smc_dev_t *smc = smc_init();
         if (smc) {
-            smc_write_u32(smc, dcp->dp2hdmi_pwr_gpio, 0x800001);
-            smc_write_u32(smc, dcp->hdmi_pwr_gpio, 0x800001);
+            if (v27) {
+                smc_write_u32(smc, dcp->hdmi_pwr_gpio, (hdmi_pwr.arg & 0xffff0000) | 1);
+                smc_write_u32(smc, dcp->dp2hdmi_pwr_gpio, (dp2hdmi_pwr.arg & 0xffff0000) | 1);
+            } else {
+                smc_write_u32(smc, dcp->dp2hdmi_pwr_gpio, 0x800001);
+                smc_write_u32(smc, dcp->hdmi_pwr_gpio, 0x800001);
+            }
             smc_shutdown(smc);
         }
     }
+
+    if (v27 && dcp_hdmi_hpd_init(dcp, node) < 0)
+        printf("dcp: HDMI HPD will not be forwarded\n");
 
     dcp->die = cfg->die;
 
@@ -99,6 +139,21 @@ int dcp_connect_dptx(dcp_dev_t *dcp)
     }
 
     return 0;
+}
+
+bool dcp_forward_hpd(dcp_dev_t *dcp)
+{
+    if (!dcp->dptx_ep || !dcp->hpd_gpio)
+        return false;
+
+    bool hpd = !!(read32(dcp->hpd_gpio) & 1) == dcp->hpd_active_high;
+    if (hpd && !dcp->hpd_forwarded) {
+        printf("dcp: HDMI HPD asserted, forwarding to DCP\n");
+        dcp_dptx_hpd(dcp->dptx_ep, 0, true);
+    }
+    dcp->hpd_forwarded = hpd;
+
+    return hpd;
 }
 
 int dcp_work(dcp_dev_t *dcp)
@@ -149,14 +204,15 @@ dcp_dev_t *dcp_init(const display_config_t *cfg)
     u32 sid;
 
     if (cfg && cfg->dptx_phy[0]) {
-        if (os_firmware.version != V13_5) {
-            printf("dcp: dtpx-port is only supported with V13_5 OS firmware.\n");
+        if (os_firmware.version != cfg->fw_version) {
+            printf("dcp: dptx-port is not supported with OS firmware %s.\n", os_firmware.string);
             return NULL;
         }
 
         strncpy(dcp_pmgr_dev, cfg->pmgr_dev, sizeof(dcp_pmgr_dev));
         dcp_die = cfg->die;
-        pmgr_adt_power_enable(cfg->dcp);
+        if (!cfg->no_reset)
+            pmgr_adt_power_enable(cfg->dcp);
         pmgr_adt_power_enable(cfg->dptx_phy);
         mdelay(25);
     }
@@ -199,7 +255,7 @@ dcp_dev_t *dcp_init(const display_config_t *cfg)
         printf("dcp: failed to create firmware mappings\n");
         goto out_iovad;
     }
-    if (ret > 0) {
+    if (ret > 0 && !cfg->no_reset) {
         pmgr_reset(dcp_die, dcp_pmgr_dev);
     }
 
@@ -213,6 +269,11 @@ dcp_dev_t *dcp_init(const display_config_t *cfg)
     if (!dcp->rtkit) {
         printf("dcp: failed to initialize RTKit\n");
         goto out_iovad;
+    }
+
+    if (cfg->no_reset) {
+        rtkit_set_dva_base(dcp->rtkit, dart_dva_base(dcp->dart_dcp));
+        rtkit_set_no_ap_power_ack(dcp->rtkit, true);
     }
 
     if (!rtkit_boot(dcp->rtkit)) {

@@ -117,6 +117,7 @@ struct dart_dev {
     enum dart_type_t type;
     const struct dart_params *params;
     u64 vm_base;
+    u64 dva_base;
 
     u64 *l1[DART_MAX_TTBR_COUNT];
 };
@@ -335,6 +336,7 @@ dart_dev_t *dart_init_adt(const char *path, int instance, int device, bool keep_
             printf("dart: unexpected length of vm-base property: %u\n", len);
         }
     }
+    dart->dva_base = dart->vm_base & ~((1LLU << 36) - 1);
     if (dart->locked)
         dart->vm_base &= (1LLU << 36) - 1;
 
@@ -762,4 +764,9 @@ void dart_shutdown(dart_dev_t *dart)
 u64 dart_vm_base(dart_dev_t *dart)
 {
     return dart->vm_base;
+}
+
+u64 dart_dva_base(dart_dev_t *dart)
+{
+    return dart->dva_base;
 }

@@ -90,6 +90,7 @@ struct rtkit_dev {
     bool sram;
 
     u64 dva_base;
+    bool no_ap_power_ack;
 
     enum rtkit_power_state iop_power;
     enum rtkit_power_state ap_power;
@@ -239,6 +240,16 @@ bool rtkit_unmap(rtkit_dev_t *rtk, u64 dva, size_t sz)
         rtkit_printf("TODO: implement no IOMMU buffers\n");
         return false;
     }
+}
+
+void *rtkit_translate(rtkit_dev_t *rtk, u64 dva)
+{
+    if (rtk->sram || rtk->sart)
+        return (void *)dva;
+    else if (rtk->dart)
+        return dart_translate(rtk->dart, (dva & ~rtk->dva_base) & IOVA_MASK);
+
+    return NULL;
 }
 
 bool rtkit_alloc_buffer(rtkit_dev_t *rtk, struct rtkit_buffer *bfr, size_t sz)
@@ -493,6 +504,16 @@ bool rtkit_start_ep(rtkit_dev_t *rtk, u8 ep)
     return true;
 }
 
+void rtkit_set_dva_base(rtkit_dev_t *rtk, u64 dva_base)
+{
+    rtk->dva_base = dva_base;
+}
+
+void rtkit_set_no_ap_power_ack(rtkit_dev_t *rtk, bool no_ack)
+{
+    rtk->no_ap_power_ack = no_ack;
+}
+
 bool rtkit_boot(rtkit_dev_t *rtk)
 {
     struct asc_message msg;
@@ -667,12 +688,12 @@ static bool rtkit_switch_power_state(rtkit_dev_t *rtk, enum rtkit_power_state ta
     msg.msg0 = FIELD_PREP(MGMT_TYPE, MGMT_MSG_AP_PWR_STATE) |
                FIELD_PREP(MGMT_PWR_STATE, RTKIT_POWER_QUIESCED);
     msg.msg1 = RTKIT_EP_MGMT;
-    if (!asc_send(rtk->asc, &msg)) {
+    if (!rtk->no_ap_power_ack && !asc_send(rtk->asc, &msg)) {
         rtkit_printf("unable to send shutdown message\n");
         return false;
     }
 
-    while (rtk->ap_power != RTKIT_POWER_QUIESCED) {
+    while (!rtk->no_ap_power_ack && rtk->ap_power != RTKIT_POWER_QUIESCED) {
         struct rtkit_message rtk_msg;
         int ret = rtkit_recv(rtk, &rtk_msg);
 
@@ -704,6 +725,13 @@ static bool rtkit_switch_power_state(rtkit_dev_t *rtk, enum rtkit_power_state ta
             rtkit_printf("IOP died during shutdown\n");
             return false;
         }
+    }
+
+    if (rtk->no_ap_power_ack) {
+        msg.msg0 = FIELD_PREP(MGMT_TYPE, MGMT_MSG_AP_PWR_STATE) |
+                   FIELD_PREP(MGMT_PWR_STATE, RTKIT_POWER_QUIESCED);
+        if (!asc_send(rtk->asc, &msg))
+            rtkit_printf("unable to send AP power message\n");
     }
 
     return true;

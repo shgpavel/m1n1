@@ -31,5 +31,6 @@ u64 dart_search(dart_dev_t *dart, void *paddr);
 u64 dart_find_iova(dart_dev_t *dart, s64 start, size_t len);
 void dart_shutdown(dart_dev_t *dart);
 u64 dart_vm_base(dart_dev_t *dart);
+u64 dart_dva_base(dart_dev_t *dart);
 
 #endif
