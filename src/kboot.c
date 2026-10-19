@@ -2027,7 +2027,8 @@ static int dt_set_display(void)
 
         ret = dt_carveout_reserved_regions("dcpext", NULL, NULL, dcpext_reserved_regions_t8103,
                                            ARRAY_SIZE(dcpext_reserved_regions_t8103));
-    } else if (!fdt_node_check_compatible(dt, 0, "apple,t8112")) {
+    } else if (!fdt_node_check_compatible(dt, 0, "apple,t8112") ||
+               !fdt_node_check_compatible(dt, 0, "apple,t8132")) {
         ret = dt_carveout_reserved_regions("dcp", "disp0", disp0_piodma_alias,
                                            disp_reserved_regions_t8112,
                                            ARRAY_SIZE(disp_reserved_regions_t8112));
