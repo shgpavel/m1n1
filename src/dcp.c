@@ -272,10 +272,8 @@ dcp_dev_t *dcp_init(const display_config_t *cfg)
         goto out_iovad;
     }
 
-    if (cfg->no_reset) {
+    if (cfg->no_reset)
         rtkit_set_dva_base(dcp->rtkit, dart_dva_base(dcp->dart_dcp));
-        rtkit_set_no_ap_power_ack(dcp->rtkit, true);
-    }
 
     if (!rtkit_boot(dcp->rtkit)) {
         printf("dcp: failed to boot RTKit\n");

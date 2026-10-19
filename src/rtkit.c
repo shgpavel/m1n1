@@ -40,8 +40,10 @@
 #define MSG_SYSLOG_LOG            5
 #define MSG_SYSLOG_LOG_INDEX      GENMASK(7, 0)
 
-#define MSG_OSLOG_INIT 0x10
-#define MSG_OSLOG_ACK  0x30
+#define MSG_OSLOG_TYPE           GENMASK(59, 56)
+#define MSG_OSLOG_IOVA           GENMASK(35, 0)
+#define MSG_OSLOG_BUFFER_REQUEST 1
+#define MSG_OSLOG_NOTIFY         2
 
 #define MGMT_MSG_HELLO        1
 #define MGMT_MSG_HELLO_ACK    2
@@ -90,7 +92,6 @@ struct rtkit_dev {
     bool sram;
 
     u64 dva_base;
-    bool no_ap_power_ack;
 
     enum rtkit_power_state iop_power;
     enum rtkit_power_state ap_power;
@@ -472,7 +473,20 @@ int rtkit_recv(rtkit_dev_t *rtk, struct rtkit_message *msg)
                 }
                 break;
             case RTKIT_EP_OSLOG:
-                rtkit_printf("unknown oslog message %lx\n", msg->msg);
+                switch (FIELD_GET(MSG_OSLOG_TYPE, msg->msg)) {
+                    case MSG_OSLOG_BUFFER_REQUEST:
+                        if (!FIELD_GET(MSG_OSLOG_IOVA, msg->msg))
+                            rtkit_printf("unsupported oslog buffer request %lx\n", msg->msg);
+                        break;
+                    case MSG_OSLOG_NOTIFY:
+                        if (!asc_send(rtk->asc, &asc_msg))
+                            rtkit_printf("failed to ack oslog\n");
+                        break;
+                    case 3 ... 5:
+                        break;
+                    default:
+                        rtkit_printf("unknown oslog message %lx\n", msg->msg);
+                }
                 break;
             default:
                 rtkit_printf("message to unknown system endpoint 0x%02x: %lx\n", msg->ep, msg->msg);
@@ -507,11 +521,6 @@ bool rtkit_start_ep(rtkit_dev_t *rtk, u8 ep)
 void rtkit_set_dva_base(rtkit_dev_t *rtk, u64 dva_base)
 {
     rtk->dva_base = dva_base;
-}
-
-void rtkit_set_no_ap_power_ack(rtkit_dev_t *rtk, bool no_ack)
-{
-    rtk->no_ap_power_ack = no_ack;
 }
 
 bool rtkit_boot(rtkit_dev_t *rtk)
@@ -688,12 +697,12 @@ static bool rtkit_switch_power_state(rtkit_dev_t *rtk, enum rtkit_power_state ta
     msg.msg0 = FIELD_PREP(MGMT_TYPE, MGMT_MSG_AP_PWR_STATE) |
                FIELD_PREP(MGMT_PWR_STATE, RTKIT_POWER_QUIESCED);
     msg.msg1 = RTKIT_EP_MGMT;
-    if (!rtk->no_ap_power_ack && !asc_send(rtk->asc, &msg)) {
+    if (!asc_send(rtk->asc, &msg)) {
         rtkit_printf("unable to send shutdown message\n");
         return false;
     }
 
-    while (!rtk->no_ap_power_ack && rtk->ap_power != RTKIT_POWER_QUIESCED) {
+    while (rtk->ap_power != RTKIT_POWER_QUIESCED) {
         struct rtkit_message rtk_msg;
         int ret = rtkit_recv(rtk, &rtk_msg);
 
@@ -725,13 +734,6 @@ static bool rtkit_switch_power_state(rtkit_dev_t *rtk, enum rtkit_power_state ta
             rtkit_printf("IOP died during shutdown\n");
             return false;
         }
-    }
-
-    if (rtk->no_ap_power_ack) {
-        msg.msg0 = FIELD_PREP(MGMT_TYPE, MGMT_MSG_AP_PWR_STATE) |
-                   FIELD_PREP(MGMT_PWR_STATE, RTKIT_POWER_QUIESCED);
-        if (!asc_send(rtk->asc, &msg))
-            rtkit_printf("unable to send AP power message\n");
     }
 
     return true;

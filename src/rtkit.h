@@ -30,7 +30,6 @@ void rtkit_free(rtkit_dev_t *rtk);
 
 bool rtkit_start_ep(rtkit_dev_t *rtk, u8 ep);
 void rtkit_set_dva_base(rtkit_dev_t *rtk, u64 dva_base);
-void rtkit_set_no_ap_power_ack(rtkit_dev_t *rtk, bool no_ack);
 bool rtkit_boot(rtkit_dev_t *rtk);
 
 bool rtkit_can_recv(rtkit_dev_t *rtk);
