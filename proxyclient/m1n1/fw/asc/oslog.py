@@ -12,6 +12,10 @@ class OSLog_GetBuf(OSLogMessage):
     SIZE = 55, 48
     DVA = 47, 0
 
+class OSLog_Notify(OSLogMessage):
+    TYPE = 63, 56, Constant(2)
+    WPTR = 31, 0
+
 class ASCOSLogEndpoint(ASCBaseEndpoint):
     BASE_MESSAGE = OSLogMessage
     SHORT = "iorep"
@@ -37,4 +41,9 @@ class ASCOSLogEndpoint(ASCBaseEndpoint):
             self.log(f"buf {self.iobuffer:#x} / {self.iobuffer_dva:#x}")
             self.send(OSLog_GetBuf(DVA=self.iobuffer_dva >> 12, SIZE=self.bufsize // 0x1000))
 
+        return True
+
+    @msg_handler(2, OSLog_Notify)
+    def Notify(self, msg):
+        self.send(msg)
         return True
